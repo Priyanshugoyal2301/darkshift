@@ -1,0 +1,22 @@
+{
+  "name": "darkshield",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DarkShield — Evidence-first dark-pattern detection platform for India's CCPA framework",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:extension": "npm run dev --workspace=apps/extension",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "build:extension": "npm run build --workspace=apps/extension",
+    "build:web": "npm run build --workspace=apps/web",
+    "build:packages": "npm run build --workspace=packages/rules && npm run build --workspace=packages/schemas",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}
