@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Airways Portal — Passenger Detail Entry</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.5; color: #1e293b; }
+    .card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 24px; }
+    .box { background: #eff6ff; border: 1px solid #bfdbfe; padding: 16px; border-radius: 6px; margin: 15px 0; }
+    button { background: #ea580c; color: white; border: none; padding: 12px 24px; font-weight: bold; border-radius: 6px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div style="font-size: 12px; font-weight: bold; color: #64748b;">CCPA BENCHMARK CASE: JULY 2026 REGRESSION</div>
+    <h1>Passenger Flight Reservation & Add-ons</h1>
+    <div style="font-size: 22px; font-weight: bold; margin: 10px 0;">Base Fare: ₹3,450</div>
+
+    <!-- CCPA Documented Violation: Pre-selected loyalty program & promotional consent -->
+    <div class="box">
+      <label style="display: flex; gap: 10px; align-items: flex-start; cursor: pointer;">
+        <input type="checkbox" checked id="preselected-loyalty-club" name="loyalty_club_optin">
+        <div>
+          <strong>Auto-enroll in Club Loyalty Membership & Exclusive Promotional WhatsApp Alerts</strong> (Pre-selected)
+          <div style="font-size: 12px; color: #1e40af;">Pre-selected loyalty opt-in and consent default cited in CCPA July 2026 order.</div>
+        </div>
+      </label>
+    </div>
+
+    <!-- Seat Selection Interface Interference -->
+    <div style="margin: 20px 0; padding: 16px; border: 1px solid #e2e8f0; border-radius: 6px;">
+      <h3>Seat Assignment</h3>
+      <p style="font-size: 13px; color: #64748b;">Choose your preferred seat now for a comfortable journey.</p>
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 15px;">
+        <button style="background: #16a34a; font-size: 16px; padding: 14px 28px; border-radius: 6px;">Select Preferred Seat ₹350</button>
+        <a href="#" style="color: #cbd5e1; font-size: 10px; text-decoration: none;">Skip seat selection</a>
+      </div>
+    </div>
+
+    <button>Continue Booking</button>
+  </div>
+</body>
+</html>

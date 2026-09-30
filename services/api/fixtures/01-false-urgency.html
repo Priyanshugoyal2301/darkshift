@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>FlashSale Deals — Wireless Noise-Cancelling Headphones</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.5; color: #1e293b; }
+    .badge { background: #fee2e2; color: #dc2626; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 13px; }
+    .timer { font-size: 28px; font-weight: 800; color: #dc2626; margin: 10px 0; font-family: monospace; }
+    .price { font-size: 32px; font-weight: 800; color: #0f172a; margin: 15px 0; }
+    .scarcity { color: #b45309; font-weight: 600; margin: 10px 0; }
+    button { background: #2563eb; color: white; border: none; padding: 14px 28px; font-size: 16px; font-weight: bold; border-radius: 6px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <span class="badge">LIGHTNING DEAL</span>
+  <h1>AuraSonic Pro Wireless ANC Headphones</h1>
+  <div class="price">₹2,499 <span style="text-decoration: line-through; color: #94a3b8; font-size: 18px;">₹6,999</span></div>
+  <div class="scarcity">Hurry! Only 2 left in stock — selling fast! 18 people viewing now.</div>
+  <div>Deal expires in:</div>
+  <div class="timer" id="countdown">04:32</div>
+  <p>Engineered for audiophiles with 40dB active noise cancellation and 50-hour battery life.</p>
+  <button id="add-to-cart-btn" onclick="addToCart()">Add to Cart</button>
+
+  <script>
+    let t = 272;
+    setInterval(() => {
+      t = t > 0 ? t - 1 : 272; // resets back to 04:32 on zero!
+      const m = String(Math.floor(t / 60)).padStart(2, '0');
+      const s = String(t % 60).padStart(2, '0');
+      document.getElementById('countdown').innerText = m + ':' + s;
+    }, 1000);
+
+    function addToCart() {
+      window.location.href = '/fixtures/03-drip-pricing-cart.html';
+    }
+  </script>
+</body>
+</html>

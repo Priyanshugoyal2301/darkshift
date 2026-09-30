@@ -1,0 +1,775 @@
+"""
+DarkShield — Python Detection Engine
+Backend mirror of the TypeScript detection engine.
+Used in URL audit mode (Playwright worker → FastAPI → Detection Engine).
+
+Architecture:
+  HTML/DOM string + visible text
+    → Rule Engine (regex, DOM patterns)
+    → NLP Classifier (text signals)
+    → Price Journey Analyzer
+    → Classifier (CCPA mapping + confidence)
+    → Finding list
+"""
+
+from __future__ import annotations
+import re
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Optional
+from bs4 import BeautifulSoup, Tag
+
+from schemas import (
+    CCPAPattern, Severity, DetectionMethod, PriceState,
+    Finding, DOMEvidence, PricePoint, PriceJourney, FeeBreakdown,
+    TransparencyScore, TransparencyDimensions, ScoreDeduction,
+    ConfidenceTier, CoverageStatus, PatternCoverageItem,
+    RiskAssessment, ScanCoverage, PriceComponent, PriceStage,
+)
+
+
+# ─── Pattern metadata ─────────────────────────────────────────────────────────
+
+PATTERN_META = {
+    CCPAPattern.FALSE_URGENCY: {
+        "title": "False Urgency",
+        "consumer_advice": (
+            "This website may be using artificial time pressure or stock scarcity "
+            "to rush your decision. Take your time — genuine deals rarely disappear in minutes."
+        ),
+        "score_weight": 15,
+        "remediation": (
+            "Ensure countdown timers reflect genuine time-limited offers. "
+            "Verify stock levels are accurate and updated in real time."
+        ),
+    },
+    CCPAPattern.BASKET_SNEAKING: {
+        "title": "Basket Sneaking",
+        "consumer_advice": (
+            "Check your cart carefully before checkout. Items or services may have "
+            "been added without your explicit consent."
+        ),
+        "score_weight": 20,
+        "remediation": (
+            "Remove pre-selected optional add-ons. All additions to cart must require "
+            "explicit affirmative user action."
+        ),
+    },
+    CCPAPattern.DRIP_PRICING: {
+        "title": "Drip Pricing",
+        "consumer_advice": (
+            "The final price shown at checkout is higher than the price initially displayed. "
+            "Review the price breakdown to understand what was added."
+        ),
+        "score_weight": 20,
+        "remediation": (
+            "Display the complete price (including all mandatory fees) on the product page. "
+            "Fees disclosed only at checkout may constitute drip pricing."
+        ),
+    },
+    CCPAPattern.CONFIRM_SHAMING: {
+        "title": "Confirm Shaming",
+        "consumer_advice": (
+            "The option to decline is worded to induce guilt or fear. "
+            "You have the right to say no without being shamed."
+        ),
+        "score_weight": 15,
+        "remediation": (
+            "Rewrite decline options using neutral language. "
+            "E.g., replace 'No, I hate saving money' with 'No thanks'."
+        ),
+    },
+    CCPAPattern.INTERFACE_INTERFERENCE: {
+        "title": "Interface Interference",
+        "consumer_advice": (
+            "The design makes it harder to choose one option over another. "
+            "Look carefully for the alternative option."
+        ),
+        "score_weight": 15,
+        "remediation": (
+            "Ensure accept and decline options have comparable visual prominence. "
+            "Both options should be clearly legible with adequate contrast."
+        ),
+    },
+    CCPAPattern.TRICK_WORDING: {
+        "title": "Trick Wording",
+        "consumer_advice": (
+            "Read options carefully. Double negatives or confusing language may "
+            "cause you to opt into something you did not intend."
+        ),
+        "score_weight": 15,
+        "remediation": "Rewrite all user-choice copy in plain, unambiguous language.",
+    },
+}
+
+
+# ─── Regex Pattern Library ────────────────────────────────────────────────────
+
+PATTERNS = {
+    # False urgency
+    "COUNTDOWN_TIMER": re.compile(r'\b\d{1,2}:\d{2}(:\d{2})?\b'),
+    "SCARCITY": re.compile(
+        r'\b(only\s+\d+\s*(left|remaining|in stock|available)|just\s+\d+\s*(left|remaining)|'
+        r'low\s+stock|almost\s+gone|selling\s+out|nearly\s+sold\s+out)\b',
+        re.I
+    ),
+    "DEADLINE": re.compile(
+        r'\b(offer ends|sale ends|deal ends|ends (in|tonight|today|soon)|'
+        r'limited time|last chance|hurry|expires in|act now|don\'?t miss out|selling fast)\b',
+        re.I
+    ),
+    "SOCIAL_PROOF": re.compile(
+        r'\b\d+\s*(people|users|others|customers|shoppers)\s*(are\s*)?(viewing|watching|bought|purchased|added)\b',
+        re.I
+    ),
+    # Basket sneaking
+    "ADDON_CHECKBOX_LABEL": re.compile(
+        r'\b(insurance|warranty|protection|subscription|donation|add-on|addon|'
+        r'premium|express|gift wrap|accidental|care|guard)\b',
+        re.I
+    ),
+    # Drip pricing fee labels
+    "HIDDEN_FEE": re.compile(
+        r'\b(platform fee|convenience fee|handling fee|service fee|'
+        r'processing fee|gateway fee|booking fee|transaction fee)\b',
+        re.I
+    ),
+    # Confirm shaming
+    "SHAME_LANGUAGE": re.compile(
+        r'\b(no,?\s*i\s*(hate|don\'?t want|don\'?t like)|no,?\s*i\'?m\s*fine\s*without|'
+        r'i\s*don\'?t\s*want\s+to\s+save|skip\s+savings|decline\s+protection|'
+        r'continue without protection|shop unprotected|'
+        r'i\s*don\'?t\s*want\s+to\s+be\s+protected)\b',
+        re.I
+    ),
+    # Trick wording (double negatives)
+    "DOUBLE_NEGATIVE": re.compile(
+        r'\b(do not uncheck|uncheck to not|opt out of not receiving|'
+        r'deselect to not|untick if you don\'?t)\b',
+        re.I
+    ),
+    # Indian currency
+    "INR_PRICE": re.compile(r'[₹₨]?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:rs\.?|inr)?', re.I),
+}
+
+# CSS selectors for DOM analysis
+DOM_SELECTORS = {
+    "countdown": "[class*='countdown'], [class*='timer'], [id*='countdown'], [id*='timer'], [data-countdown]",
+    "scarcity_el": "[class*='stock'], [class*='scarcity'], [class*='remaining'], [class*='availability']",
+    "price": "[class*='price'], [class*='cost'], [class*='amount'], [class*='total'], [itemprop='price'], [data-price]",
+    "checkbox": "input[type='checkbox']",
+    "skip_link": "a[class*='skip'], button[class*='skip'], [class*='no-thanks'], [class*='not-now']",
+}
+
+
+# ─── Partial Finding ─────────────────────────────────────────────────────────
+
+@dataclass
+class PartialFinding:
+    pattern: CCPAPattern
+    sub_signals: list[str]
+    confidence: float
+    severity: Severity
+    detection_methods: list[DetectionMethod]
+    rule_ids: list[str]
+    text_snippets: list[str] = field(default_factory=list)
+    dom_evidence: list[DOMEvidence] = field(default_factory=list)
+    price_journey: Optional[PriceJourney] = None
+    url: str = ""
+    page_state: PriceState = PriceState.UNKNOWN
+    raw_title: str = ""
+
+
+# ─── Rule Engine ─────────────────────────────────────────────────────────────
+
+def run_rule_engine(soup: BeautifulSoup, text: str, url: str) -> list[PartialFinding]:
+    findings: list[PartialFinding] = []
+    page_state = classify_page_state(url, text)
+
+    # ── Countdown timers ──────────────────────────────────────────────────────
+    timer_els = soup.select("[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer'],[data-countdown]")
+    timer_texts = [el.get_text(strip=True) for el in timer_els if PATTERNS["COUNTDOWN_TIMER"].search(el.get_text())]
+
+    # Also search all text nodes
+    if not timer_texts:
+        for el in soup.find_all(text=PATTERNS["COUNTDOWN_TIMER"]):
+            timer_texts.append(str(el).strip()[:100])
+
+    if timer_texts:
+        findings.append(PartialFinding(
+            pattern=CCPAPattern.FALSE_URGENCY,
+            sub_signals=["COUNTDOWN_TIMER"],
+            confidence=0.65,
+            severity=Severity.MEDIUM,
+            detection_methods=[DetectionMethod.DOM_RULE],
+            rule_ids=["FU_COUNTDOWN_TIMER"],
+            text_snippets=timer_texts[:3],
+            url=url,
+            page_state=page_state,
+            raw_title="Countdown Timer Detected",
+        ))
+
+    # ── Scarcity ──────────────────────────────────────────────────────────────
+    scarcity_matches = list(set(PATTERNS["SCARCITY"].findall(text)))
+    if scarcity_matches:
+        findings.append(PartialFinding(
+            pattern=CCPAPattern.FALSE_URGENCY,
+            sub_signals=["SCARCITY_CLAIM"],
+            confidence=0.70,
+            severity=Severity.MEDIUM,
+            detection_methods=[DetectionMethod.DOM_RULE],
+            rule_ids=["FU_SCARCITY_CLAIM"],
+            text_snippets=[str(m[0] if isinstance(m, tuple) else m) for m in scarcity_matches[:3]],
+            url=url,
+            page_state=page_state,
+            raw_title="Scarcity Signal Detected",
+        ))
+
+    # ── Deadline ──────────────────────────────────────────────────────────────
+    deadline_matches = PATTERNS["DEADLINE"].findall(text)
+    if deadline_matches:
+        findings.append(PartialFinding(
+            pattern=CCPAPattern.FALSE_URGENCY,
+            sub_signals=["DEADLINE_LANGUAGE"],
+            confidence=0.72,
+            severity=Severity.MEDIUM,
+            detection_methods=[DetectionMethod.DOM_RULE],
+            rule_ids=["FU_DEADLINE_TEXT"],
+            text_snippets=[str(m) for m in deadline_matches[:3]],
+            url=url,
+            page_state=page_state,
+            raw_title="Deadline Language Detected",
+        ))
+
+    # ── Pre-checked checkboxes ────────────────────────────────────────────────
+    for cb in soup.find_all("input", {"type": "checkbox"}):
+        if cb.get("checked") is not None or cb.get("checked") == "":
+            label_text = _find_label_text(soup, cb)
+            if label_text and PATTERNS["ADDON_CHECKBOX_LABEL"].search(label_text):
+                findings.append(PartialFinding(
+                    pattern=CCPAPattern.BASKET_SNEAKING,
+                    sub_signals=["PRE_TICKED_CHECKBOX"],
+                    confidence=0.85,
+                    severity=Severity.HIGH,
+                    detection_methods=[DetectionMethod.DOM_RULE],
+                    rule_ids=["BS_PRE_TICKED_CHECKBOX"],
+                    text_snippets=[label_text[:200]],
+                    url=url,
+                    page_state=page_state,
+                    raw_title="Pre-ticked Optional Add-on Checkbox",
+                ))
+
+    # ── Confirm shaming ───────────────────────────────────────────────────────
+    for el in soup.find_all(["button", "a", "label"]):
+        el_text = el.get_text(strip=True)
+        if PATTERNS["SHAME_LANGUAGE"].search(el_text):
+            findings.append(PartialFinding(
+                pattern=CCPAPattern.CONFIRM_SHAMING,
+                sub_signals=["SHAME_LANGUAGE"],
+                confidence=0.88,
+                severity=Severity.HIGH,
+                detection_methods=[DetectionMethod.DOM_RULE],
+                rule_ids=["CS_SHAME_DECLINE"],
+                text_snippets=[el_text[:300]],
+                url=url,
+                page_state=page_state,
+                raw_title="Confirm Shaming Text Detected",
+            ))
+
+    # ── Hidden fees ───────────────────────────────────────────────────────────
+    fee_matches = PATTERNS["HIDDEN_FEE"].findall(text)
+    if fee_matches and page_state in (PriceState.CHECKOUT, PriceState.CART):
+        findings.append(PartialFinding(
+            pattern=CCPAPattern.DRIP_PRICING,
+            sub_signals=["HIDDEN_FEE", "MANDATORY_FEE"],
+            confidence=0.80,
+            severity=Severity.HIGH,
+            detection_methods=[DetectionMethod.DOM_RULE],
+            rule_ids=["DP_HIDDEN_FEE_CHECKOUT"],
+            text_snippets=list(set(fee_matches))[:3],
+            url=url,
+            page_state=page_state,
+            raw_title="Hidden Mandatory Fee at Checkout",
+        ))
+
+    # ── Social proof ──────────────────────────────────────────────────────────
+    social_matches = PATTERNS["SOCIAL_PROOF"].findall(text)
+    if social_matches:
+        findings.append(PartialFinding(
+            pattern=CCPAPattern.FALSE_URGENCY,
+            sub_signals=["SOCIAL_PROOF_PRESSURE"],
+            confidence=0.68,
+            severity=Severity.MEDIUM,
+            detection_methods=[DetectionMethod.DOM_RULE],
+            rule_ids=["FU_SOCIAL_PROOF"],
+            text_snippets=[str(m) for m in social_matches[:3]],
+            url=url,
+            page_state=page_state,
+            raw_title="Social Proof Pressure Detected",
+        ))
+
+    # ── Trick wording ─────────────────────────────────────────────────────────
+    trick_matches = PATTERNS["DOUBLE_NEGATIVE"].findall(text)
+    if trick_matches:
+        findings.append(PartialFinding(
+            pattern=CCPAPattern.TRICK_WORDING,
+            sub_signals=["DOUBLE_NEGATIVE"],
+            confidence=0.82,
+            severity=Severity.HIGH,
+            detection_methods=[DetectionMethod.DOM_RULE, DetectionMethod.NLP_CLASSIFIER],
+            rule_ids=["TW_DOUBLE_NEGATIVE"],
+            text_snippets=[str(m) for m in trick_matches[:3]],
+            url=url,
+            page_state=page_state,
+            raw_title="Trick Wording (Double Negative) Detected",
+        ))
+
+    return findings
+
+
+def _find_label_text(soup: BeautifulSoup, checkbox: Tag) -> str:
+    cb_id = checkbox.get("id")
+    if cb_id:
+        label = soup.find("label", {"for": cb_id})
+        if label:
+            return label.get_text(strip=True)
+    parent = checkbox.parent
+    if parent and parent.name == "label":
+        return parent.get_text(strip=True)
+    sibling = checkbox.next_sibling
+    if sibling:
+        return str(sibling).strip()[:200]
+    return ""
+
+
+# ─── Price Analyzer ───────────────────────────────────────────────────────────
+
+def extract_prices_from_text(text: str) -> list[float]:
+    """Extract INR prices from text."""
+    prices = []
+    # Match ₹1,299 or Rs. 1299 or INR 1299
+    for match in re.finditer(r'[₹₨]?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:rs\.?|inr)?', text, re.I):
+        raw = match.group(1).replace(",", "")
+        try:
+            val = float(raw)
+            if 1 <= val <= 10_000_000:  # sanity range for INR prices
+                prices.append(val)
+        except ValueError:
+            pass
+    return list(set(prices))
+
+
+def analyze_price_journey(snapshots: list[dict]) -> Optional[PriceJourney]:
+    """Compare prices across page states to detect drip pricing."""
+    if len(snapshots) < 2:
+        return None
+
+    state_prices: dict[str, float] = {}
+    all_points: list[PricePoint] = []
+
+    for snap in snapshots:
+        prices = snap.get("prices", [])
+        state = snap.get("state", "unknown")
+        if prices:
+            max_price = max(prices)
+            state_prices[state] = max_price
+            all_points.append(PricePoint(
+                state=PriceState(state) if state in PriceState.__members__.values() else PriceState.UNKNOWN,
+                amount=max_price,
+                currency="INR",
+                url=snap.get("url", ""),
+            ))
+
+    product_price = state_prices.get("product", 0)
+    checkout_price = state_prices.get("checkout") or state_prices.get("cart") or 0
+
+    if not product_price or not checkout_price:
+        return None
+
+    delta = checkout_price - product_price
+    if delta <= 0:
+        return None
+
+    return PriceJourney(
+        points=all_points,
+        delta_total=delta,
+        mandatory_additions=[],
+        potential_drip=True,
+    )
+
+
+# ─── Classifier ───────────────────────────────────────────────────────────────
+
+def build_explanation(partial: PartialFinding) -> str:
+    parts = []
+    snippets = partial.text_snippets
+
+    if "COUNTDOWN_TIMER" in partial.sub_signals:
+        parts.append(
+            f"A countdown timer was detected: '{snippets[0] if snippets else 'timer visible'}'. "
+            "While time-limited offers can be genuine, unverifiable countdown timers may create artificial urgency."
+        )
+    if "SCARCITY_CLAIM" in partial.sub_signals:
+        parts.append(
+            f"A low-stock claim was found: '{snippets[0] if snippets else 'scarcity text'}'. "
+            "DarkShield cannot independently verify whether this stock count is accurate."
+        )
+    if "DEADLINE_LANGUAGE" in partial.sub_signals:
+        parts.append(
+            f"Deadline-creating language was detected: '{snippets[0] if snippets else 'deadline text'}'. "
+            "This type of language is designed to pressure users into quick decisions."
+        )
+    if "SOCIAL_PROOF_PRESSURE" in partial.sub_signals:
+        parts.append(
+            f"Social pressure claims detected: '{snippets[0] if snippets else 'social proof'}'. "
+            "These figures are typically unverifiable by the consumer."
+        )
+    if "PRE_TICKED_CHECKBOX" in partial.sub_signals:
+        parts.append(
+            f"An optional add-on checkbox was pre-selected: '{snippets[0] if snippets else 'add-on'}'. "
+            "The CCPA 2023 framework requires affirmative consent for add-ons."
+        )
+    if "SHAME_LANGUAGE" in partial.sub_signals:
+        parts.append(
+            f"The decline option uses shame-inducing language: '{snippets[0] if snippets else 'decline text'}'. "
+            "Consumers have the right to decline without guilt-inducing copy."
+        )
+    if any(s in partial.sub_signals for s in ["MANDATORY_FEE", "HIDDEN_FEE"]):
+        snippets_str = "; ".join(snippets[:2]) if snippets else "mandatory fee detected"
+        parts.append(
+            f"A mandatory fee appeared that was not disclosed early: {snippets_str}. "
+            "Under CCPA 2023, all mandatory charges should be disclosed upfront."
+        )
+    if "DOUBLE_NEGATIVE" in partial.sub_signals:
+        parts.append(
+            f"Trick wording was detected: '{snippets[0] if snippets else 'confusing copy'}'. "
+            "Double negatives in opt-out language can cause users to inadvertently consent."
+        )
+
+    if not parts:
+        parts.append(
+            f"Evidence of potential {partial.pattern.value.replace('_', ' ').lower()} was detected on this page."
+        )
+
+    return " ".join(parts)
+
+
+def classify_finding(partial: PartialFinding) -> Finding:
+    meta = PATTERN_META.get(partial.pattern, {})
+
+    # Calibrate confidence tier
+    evidence_sources = [m.value for m in partial.detection_methods]
+    if partial.dom_evidence:
+        evidence_sources.append("DOM_SELECTORS")
+    if partial.price_journey:
+        evidence_sources.append("PRICE_STATE_DIFF")
+
+    if partial.confidence >= 0.85 and len(evidence_sources) >= 2:
+        tier = ConfidenceTier.HIGH
+    elif partial.confidence >= 0.70 or len(evidence_sources) >= 2:
+        tier = ConfidenceTier.MEDIUM
+    else:
+        tier = ConfidenceTier.LOW
+
+    return Finding(
+        id=f"ds-{uuid.uuid4().hex[:8]}",
+        pattern=partial.pattern,
+        sub_signals=partial.sub_signals,
+        confidence=partial.confidence,
+        confidence_tier=tier,
+        evidence_sources=evidence_sources,
+        severity=partial.severity,
+        url=partial.url,
+        page_state=partial.page_state,
+        dom_evidence=partial.dom_evidence,
+        price_journey=partial.price_journey,
+        text_snippets=partial.text_snippets,
+        detection_methods=partial.detection_methods,
+        rule_ids=partial.rule_ids,
+        ccpa_category=partial.pattern,
+        ccpa_regulation="CCPA_DARK_PATTERNS_2023",
+        title=partial.raw_title or meta.get("title", partial.pattern.value),
+        explanation=build_explanation(partial),
+        consumer_advice=meta.get("consumer_advice", ""),
+        remediation_hint=meta.get("remediation"),
+        timestamp=time.time(),
+    )
+
+
+# ─── Score ────────────────────────────────────────────────────────────────────
+
+DIMENSION_PATTERNS: dict[str, list[CCPAPattern]] = {
+    "price_transparency": [CCPAPattern.DRIP_PRICING, CCPAPattern.SAAS_BILLING],
+    "choice_neutrality": [CCPAPattern.INTERFACE_INTERFERENCE, CCPAPattern.FORCED_ACTION, CCPAPattern.BAIT_AND_SWITCH],
+    "consent_clarity": [CCPAPattern.BASKET_SNEAKING, CCPAPattern.SUBSCRIPTION_TRAP],
+    "urgency_signals": [CCPAPattern.FALSE_URGENCY, CCPAPattern.NAGGING],
+    "flow_transparency": [CCPAPattern.CONFIRM_SHAMING, CCPAPattern.TRICK_WORDING, CCPAPattern.DISGUISED_ADVERTISEMENT],
+}
+
+
+def compute_transparency_score(findings: list[Finding]) -> TransparencyScore:
+    deductions: list[ScoreDeduction] = []
+    dim_deductions: dict[str, int] = {k: 0 for k in DIMENSION_PATTERNS}
+
+    for finding in findings:
+        meta = PATTERN_META.get(finding.pattern, {})
+        pts = round(meta.get("score_weight", 10) * finding.confidence)
+
+        dim = "flow_transparency"
+        for d, patterns in DIMENSION_PATTERNS.items():
+            if finding.pattern in patterns:
+                dim = d
+                break
+
+        dim_deductions[dim] = min(100, dim_deductions[dim] + pts)
+        deductions.append(ScoreDeduction(
+            pattern=finding.pattern,
+            finding_id=finding.id,
+            points_deducted=pts,
+            reason=finding.title,
+        ))
+
+    dimensions = TransparencyDimensions(
+        price_transparency=max(0, 100 - dim_deductions["price_transparency"]),
+        choice_neutrality=max(0, 100 - dim_deductions["choice_neutrality"]),
+        consent_clarity=max(0, 100 - dim_deductions["consent_clarity"]),
+        urgency_signals=max(0, 100 - dim_deductions["urgency_signals"]),
+        flow_transparency=max(0, 100 - dim_deductions["flow_transparency"]),
+    )
+
+    total_pts = sum(d.points_deducted for d in deductions)
+    total = max(0, min(100, 100 - round(total_pts * 0.5)))
+
+    return TransparencyScore(total=total, dimensions=dimensions, deductions=deductions)
+
+
+# ─── Page State Classifier ────────────────────────────────────────────────────
+
+def classify_page_state(url: str, text: str) -> PriceState:
+    url_l = url.lower()
+    text_l = text.lower()
+    if any(x in url_l for x in ["/cart", "/basket", "/bag", "/trolley"]):
+        return PriceState.CART
+    if any(x in url_l for x in ["/checkout", "/order-summary", "/review-order"]):
+        if any(x in text_l for x in ["pay now", "place order", "upi", "card number"]):
+            return PriceState.PAYMENT
+        return PriceState.CHECKOUT
+    if any(x in url_l for x in ["/product", "/item", "/dp/", "/p/"]):
+        return PriceState.PRODUCT
+    if "add to cart" in text_l or "buy now" in text_l:
+        return PriceState.PRODUCT
+    return PriceState.UNKNOWN
+
+
+# ─── Full Analysis Pipeline ───────────────────────────────────────────────────
+
+def analyze_page(
+    url: str,
+    html: str,
+    visible_text: str,
+    price_snapshots: Optional[list[dict]] = None,
+) -> tuple[list[Finding], Optional[PriceJourney]]:
+    """
+    Full detection pipeline for one page.
+    Returns (findings, price_journey).
+    """
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except Exception:
+        soup = BeautifulSoup(html, "html.parser")
+    text = visible_text or soup.get_text(separator=" ", strip=True)
+
+    partial_findings = run_rule_engine(soup, text, url)
+
+    # Price journey analysis
+    journey: Optional[PriceJourney] = None
+    if price_snapshots and len(price_snapshots) >= 2:
+        journey = analyze_price_journey(price_snapshots)
+        if journey:
+            partial_findings.append(PartialFinding(
+                pattern=CCPAPattern.DRIP_PRICING,
+                sub_signals=["MANDATORY_FEE"],
+                confidence=min(0.70 + journey.delta_total / 2000, 0.95),
+                severity=Severity.HIGH if journey.delta_total > 200 else Severity.MEDIUM,
+                detection_methods=[DetectionMethod.PRICE_JOURNEY],
+                rule_ids=["DP_PRICE_INCREASE"],
+                text_snippets=[
+                    f"Price journey: ₹{min(p.amount for p in journey.points):.0f} → ₹{max(p.amount for p in journey.points):.0f}",
+                    f"Unexplained increase: ₹{journey.delta_total:.0f}",
+                ],
+                url=url,
+                price_journey=journey,
+                raw_title="Potential Drip Pricing",
+            ))
+
+    findings = [classify_finding(pf) for pf in partial_findings]
+    return findings, journey
+
+
+# ─── Risk Assessment & Coverage Calculus ─────────────────────────────────────
+
+def compute_risk_assessment(findings: list[Finding], checks_performed: int = 14) -> RiskAssessment:
+    high_count = sum(1 for f in findings if f.confidence_tier == ConfidenceTier.HIGH or f.confidence >= 0.85)
+    med_count = sum(1 for f in findings if f.confidence_tier == ConfidenceTier.MEDIUM or (0.65 <= f.confidence < 0.85))
+    low_count = sum(1 for f in findings if f.confidence_tier == ConfidenceTier.LOW or f.confidence < 0.65)
+
+    # Weighted risk index (0 to 100)
+    risk_score = min(100, high_count * 30 + med_count * 15 + low_count * 5)
+
+    if high_count >= 1 or risk_score >= 50:
+        level = "HIGH"
+        summary = f"{len(findings)} potential dark patterns detected ({high_count} high-confidence violations)."
+    elif med_count >= 1 or risk_score >= 20:
+        level = "ELEVATED"
+        summary = f"{len(findings)} potential dark pattern signals identified. Verification advised."
+    else:
+        level = "LOW"
+        summary = f"No high-confidence dark patterns detected across {checks_performed} statutory checks."
+
+    return RiskAssessment(
+        risk_level=level,
+        risk_score=risk_score,
+        checks_performed=checks_performed,
+        signals_found=len(findings),
+        high_confidence_count=high_count,
+        medium_confidence_count=med_count,
+        low_confidence_count=low_count,
+        summary=summary,
+    )
+
+
+CCPA_SECTION_MAP = {
+    CCPAPattern.FALSE_URGENCY: ("False Urgency", "§ 5(1)", ["product", "cart"]),
+    CCPAPattern.BASKET_SNEAKING: ("Basket Sneaking", "§ 5(2)", ["cart", "checkout"]),
+    CCPAPattern.CONFIRM_SHAMING: ("Confirm Shaming", "§ 5(3)", ["product", "cart", "checkout"]),
+    CCPAPattern.FORCED_ACTION: ("Forced Action", "§ 5(4)", ["cart", "checkout"]),
+    CCPAPattern.SUBSCRIPTION_TRAP: ("Subscription Trap", "§ 5(5)", ["cart", "checkout"]),
+    CCPAPattern.INTERFACE_INTERFERENCE: ("Interface Interference", "§ 5(6)", ["product", "cart", "checkout"]),
+    CCPAPattern.DRIP_PRICING: ("Drip Pricing", "§ 5(7)", ["checkout"]),
+    CCPAPattern.TRICK_WORDING: ("Trick Wording", "§ 5(8)", ["product", "cart", "checkout"]),
+    CCPAPattern.NAGGING: ("Nagging", "§ 5(9)", ["product", "cart"]),
+    CCPAPattern.BAIT_AND_SWITCH: ("Bait & Switch", "§ 5(10)", ["cart", "checkout"]),
+    CCPAPattern.DISGUISED_ADVERTISEMENT: ("Disguised Ads", "§ 5(11)", ["product"]),
+    CCPAPattern.SAAS_BILLING: ("SaaS Billing", "§ 5(12)", ["checkout"]),
+    CCPAPattern.ROGUE_MALWARE: ("Rogue Malware", "§ 5(13)", ["product"]),
+}
+
+
+def compute_scan_coverage(stages_scanned: list[str], findings: list[Finding]) -> ScanCoverage:
+    detected_patterns = {f.pattern for f in findings}
+    checkout_reached = "checkout" in stages_scanned
+    items: list[PatternCoverageItem] = []
+
+    for pattern, (name, sec, required_stages) in CCPA_SECTION_MAP.items():
+        if pattern in detected_patterns:
+            status = CoverageStatus.DETECTED
+            reason = "Potential dark pattern detected with supporting evidence."
+        elif all(stage in stages_scanned for stage in required_stages):
+            status = CoverageStatus.EVALUATED_CLEAN
+            reason = f"Evaluated across {', '.join(stages_scanned)}; no violation indicators observed."
+        else:
+            status = CoverageStatus.NOT_EVALUATED
+            missing = [s for s in required_stages if s not in stages_scanned]
+            reason = f"Inconclusive — required purchase flow stage ({', '.join(missing)}) was not reached by scanner."
+
+        items.append(PatternCoverageItem(
+            pattern=pattern,
+            pattern_name=name,
+            ccpa_section=sec,
+            status=status,
+            reason=reason
+        ))
+
+    evaluated_count = sum(1 for i in items if i.status in (CoverageStatus.DETECTED, CoverageStatus.EVALUATED_CLEAN))
+    coverage_score = round((evaluated_count / len(CCPA_SECTION_MAP)) * 100)
+
+    return ScanCoverage(
+        stages_scanned=stages_scanned,
+        checkout_reached=checkout_reached,
+        coverage_score=coverage_score,
+        items=items
+    )
+
+
+# ─── Price Component Extraction ─────────────────────────────────────────────
+
+def extract_price_components(html: str, text: str) -> tuple[float, list[PriceComponent]]:
+    components = []
+    seen_labels = set()
+
+    def add_comp(ctype: str, label: str, amount: float, mandatory: bool):
+        norm_key = f"{ctype}-{amount}"
+        if norm_key not in seen_labels and amount > 0:
+            seen_labels.add(norm_key)
+            components.append(PriceComponent(
+                component_type=ctype,
+                label=label,
+                amount=amount,
+                is_mandatory=mandatory,
+                disclosed_early=False
+            ))
+
+    # 1. Inspect DOM structures (fee-row, tr, div, label, li)
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        # Candidate fee elements
+        fee_elements = soup.find_all(lambda tag: tag.name in ("div", "tr", "li", "p", "label") and (
+            any(c in " ".join(tag.get("class", [])) for c in ("fee", "price", "addon", "total", "item", "late")) or
+            any(w in tag.get_text().lower() for w in ("fee", "charge", "delivery", "shipping", "insurance", "donation", "carbon", "convenience", "platform", "handling"))
+        ))
+        
+        for el in fee_elements:
+            el_text = el.get_text(separator=" ", strip=True)
+            # Limit to line items (under 200 chars)
+            if len(el_text) > 250:
+                continue
+            
+            # Find amounts inside this element
+            amounts = extract_prices_from_text(el_text)
+            if not amounts:
+                continue
+            amt = amounts[0]
+
+            el_lower = el_text.lower()
+            if any(w in el_lower for w in ("convenience fee", "platform fee", "handling fee", "booking fee", "service fee", "gateway fee")):
+                add_comp("convenience_fee", "Convenience / Platform Fee", amt, True)
+            elif any(w in el_lower for w in ("delivery", "shipping", "courier")):
+                add_comp("shipping", "Delivery Charges", amt, True)
+            elif any(w in el_lower for w in ("insurance", "travel protect", "securetrips", "warranty", "coverage")):
+                add_comp("protection", "Optional Insurance / Protection", amt, False)
+            elif any(w in el_lower for w in ("donation", "charity", "foundation", "carbon offset", "contribution", "green aviation")):
+                add_comp("donation", "Charitable / Carbon Contribution", amt, False)
+            elif "mandatory" in el_lower and amt > 0:
+                add_comp("convenience_fee", "Mandatory Booking Surcharge", amt, True)
+    except Exception:
+        pass
+
+    # 2. Regex fallback over plain text lines
+    lines = text.split("\n")
+    for line in lines:
+        line_clean = line.strip()
+        if not line_clean or len(line_clean) > 200:
+            continue
+        line_lower = line_clean.lower()
+        amounts = extract_prices_from_text(line_clean)
+        if not amounts:
+            continue
+        amt = amounts[0]
+
+        if any(w in line_lower for w in ("convenience fee", "platform fee", "handling fee", "booking fee")) and amt < 10000:
+            add_comp("convenience_fee", "Convenience / Platform Fee", amt, True)
+        elif any(w in line_lower for w in ("delivery", "shipping")) and amt < 5000:
+            add_comp("shipping", "Delivery Charges", amt, True)
+        elif any(w in line_lower for w in ("insurance", "securetrips", "protect")) and amt < 10000:
+            add_comp("protection", "Insurance / Protection Add-on", amt, False)
+        elif any(w in line_lower for w in ("carbon offset", "foundation", "donation")) and amt < 500:
+            add_comp("donation", "Donation / Carbon Contribution", amt, False)
+
+    # Total price calculation
+    prices = extract_prices_from_text(text)
+    total = max(prices) if prices else 0.0
+
+    return total, components
+
+

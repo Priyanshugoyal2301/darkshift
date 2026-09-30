@@ -1,0 +1,21 @@
+"""
+DarkShield — FastAPI Backend
+Layer 3/4 detection for website audit mode (URL scanner)
+"""
+
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+pydantic==2.7.1
+pydantic-settings==2.3.1
+httpx==0.27.0
+playwright==1.44.0
+redis==5.0.6
+rq==1.16.2
+python-dotenv==1.0.1
+beautifulsoup4==4.12.3
+lxml==5.2.2
+# ML stack
+scikit-learn==1.5.0
+numpy==1.26.4
+# Rule engine
+regex==2024.5.15

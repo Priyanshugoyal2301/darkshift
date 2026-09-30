@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AeroJet Booking — Cart & Add-ons</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.5; color: #1e293b; }
+    .card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 24px; margin-bottom: 20px; }
+    .fee-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9; font-size: 14px; }
+    .total-row { display: flex; justify-content: space-between; padding: 14px 0; font-size: 20px; font-weight: 800; color: #047857; }
+    button { background: #059669; color: white; border: none; padding: 14px 28px; font-size: 16px; font-weight: bold; border-radius: 6px; cursor: pointer; }
+    .opt-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px; margin: 15px 0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div style="font-weight: 700; color: #64748b; font-size: 13px;">STAGE 2: CART REVIEW</div>
+    <h2>Flight Summary (DEL → BLR)</h2>
+    
+    <div class="fee-row">
+      <span>Base Fare (1 Passenger)</span>
+      <span>₹4,890</span>
+    </div>
+
+    <!-- Sneaked Pre-Ticked Insurance -->
+    <div class="opt-box">
+      <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer;">
+        <input type="checkbox" checked id="addon-insurance" name="travel_insurance">
+        <div>
+          <strong>Add SecureTrips Comprehensive Insurance for ₹199</strong> (Pre-selected)
+          <div style="font-size: 12px; color: #64748b;">Covers flight delays, medical emergency, and lost baggage.</div>
+        </div>
+      </label>
+    </div>
+
+    <!-- Sneaked Pre-Ticked Carbon Offset -->
+    <div class="opt-box">
+      <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer;">
+        <input type="checkbox" checked id="addon-donation" name="green_donation">
+        <div>
+          <strong>Add Green Aviation Carbon Offset Contribution for ₹99</strong> (Pre-selected)
+          <div style="font-size: 12px; color: #64748b;">Support climate re-forestation initiatives in India.</div>
+        </div>
+      </label>
+    </div>
+
+    <div class="fee-row">
+      <span>Insurance & Carbon Add-ons</span>
+      <span>₹298</span>
+    </div>
+
+    <div class="total-row">
+      <span>Cart Subtotal</span>
+      <span>₹5,188</span>
+    </div>
+
+    <button id="proceed-checkout-btn" onclick="window.location.href='/fixtures/03-drip-pricing-checkout.html'">Proceed to Checkout</button>
+  </div>
+</body>
+</html>
