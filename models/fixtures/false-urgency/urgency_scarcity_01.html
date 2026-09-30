@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<!--
+  DarkShield Test Fixture: Drip Pricing + False Urgency + Scarcity
+  Demonstrates the core demo scenario from the PPT:
+    Product Page: ₹999
+    "Only 2 left!"
+    Countdown: "Offer ends in 04:32"
+    → Checkout: ₹1,248
+
+  Expected detections:
+    ✓ FALSE_URGENCY (countdown timer)
+    ✓ FALSE_URGENCY (scarcity claim)
+    ✓ DRIP_PRICING (to be detected via price journey tracking)
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TechStore — Premium Wireless Headphones</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #f5f5f5; }
+    .product-card { background: white; padding: 30px; border-radius: 8px; }
+    .price { font-size: 32px; font-weight: bold; color: #e53e3e; }
+    .urgency-banner { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px 16px; margin: 16px 0; }
+    .countdown-timer { font-size: 24px; font-weight: bold; color: #c53030; font-family: monospace; }
+    .stock-warning { color: #c53030; font-weight: 600; font-size: 14px; }
+    .add-to-cart { background: #e53e3e; color: white; border: none; padding: 14px 28px; font-size: 16px; border-radius: 6px; cursor: pointer; width: 100%; margin-top: 20px; }
+    .viewers { font-size: 13px; color: #666; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="product-card">
+    <h1>Sony WH-1000XM5 Wireless Headphones</h1>
+    <p style="color: #666; margin: 8px 0;">Noise Cancelling · 30hr Battery · Hi-Res Audio</p>
+
+    <!-- DRIP PRICING: Product page shows ₹999, but checkout will be ₹1,248 -->
+    <div style="margin: 16px 0;">
+      <span style="color: #999; text-decoration: line-through; font-size: 18px;">₹3,499</span>
+      <div class="price">₹999</div>
+      <span style="color: green; font-size: 14px;">71% off — Limited time deal</span>
+    </div>
+
+    <!-- FALSE URGENCY: Countdown timer -->
+    <div class="urgency-banner" id="urgency-section">
+      <div style="font-weight: 600; margin-bottom: 6px;">⚡ Flash Sale — Offer ends in:</div>
+      <div class="countdown-timer" id="countdown">04:32</div>
+      <div style="font-size: 12px; color: #856404; margin-top: 4px;">Sale ends tonight · Don't miss out!</div>
+    </div>
+
+    <!-- SCARCITY: Low stock claim -->
+    <div style="margin: 12px 0;">
+      <div class="stock-warning">⚠ Only 2 left in stock — selling fast!</div>
+      <div class="viewers">👁 14 people are viewing this right now</div>
+    </div>
+
+    <button class="add-to-cart" id="add-to-cart">Add to Cart</button>
+
+    <div style="font-size: 12px; color: #999; margin-top: 12px;">
+      Free delivery on orders above ₹500
+    </div>
+  </div>
+
+  <script>
+    // Countdown that always shows the same value (fake urgency)
+    // A timer that resets on refresh is a strong indicator of FALSE_URGENCY
+    let seconds = 272; // 4:32
+    function updateTimer() {
+      const mins = Math.floor(seconds / 60);
+      const secs = seconds % 60;
+      document.getElementById('countdown').textContent =
+        `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+      if (seconds > 0) seconds--;
+    }
+    setInterval(updateTimer, 1000);
+  </script>
+</body>
+</html>

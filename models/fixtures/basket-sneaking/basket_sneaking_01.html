@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<!--
+  DarkShield Test Fixture: Confirm Shaming + Basket Sneaking
+  Expected detections:
+    ✓ BASKET_SNEAKING (pre-checked warranty checkbox)
+    ✓ BASKET_SNEAKING (pre-checked newsletter subscription)
+    ✓ CONFIRM_SHAMING ("No, I hate saving money" decline text)
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>TechStore Checkout — Add Protection Plan</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; }
+    .card { background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 24px; margin-bottom: 16px; }
+    .btn-primary { background: #3182ce; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; }
+    .btn-decline { background: none; border: none; color: #9ca3af; font-size: 12px; cursor: pointer; text-decoration: underline; margin-top: 8px; display: block; }
+    label { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+    .addon-price { color: #e53e3e; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <!-- CONFIRM SHAMING: offer popup -->
+  <div class="card">
+    <h2>🛡️ Complete Your Protection</h2>
+    <p style="color: #4a5568; margin: 12px 0;">Add 2-year accidental damage protection for just ₹199</p>
+
+    <button class="btn-primary">Yes, protect my purchase!</button>
+
+    <!-- CONFIRM SHAMING: shame-inducing decline -->
+    <button class="btn-decline" id="shame-decline">
+      No, I hate saving money and don't want protection
+    </button>
+  </div>
+
+  <!-- BASKET SNEAKING: pre-checked checkboxes -->
+  <div class="card">
+    <h3>Additional Services</h3>
+    <p style="font-size: 13px; color: #718096; margin-bottom: 16px;">Review your order add-ons below:</p>
+
+    <div style="space-y: 12px;">
+      <!-- PRE-TICKED: Accidental damage insurance -->
+      <label style="margin-bottom: 12px; display: flex;">
+        <input type="checkbox" checked id="insurance-cb" />
+        <div style="margin-left: 10px;">
+          <div style="font-weight: 600; font-size: 14px;">Accidental Damage Insurance</div>
+          <div style="font-size: 12px; color: #718096;">1-year coverage for drops, spills, and screen damage</div>
+          <div class="addon-price">+ ₹149/year</div>
+        </div>
+      </label>
+
+      <!-- PRE-TICKED: Extended warranty -->
+      <label style="margin-bottom: 12px; display: flex;">
+        <input type="checkbox" checked id="warranty-cb" />
+        <div style="margin-left: 10px;">
+          <div style="font-weight: 600; font-size: 14px;">Extended Warranty (2 Years)</div>
+          <div style="font-size: 12px; color: #718096;">Extends manufacturer warranty by 2 years</div>
+          <div class="addon-price">+ ₹249 one-time</div>
+        </div>
+      </label>
+
+      <!-- PRE-TICKED: Newsletter / promotional emails -->
+      <label style="display: flex;">
+        <input type="checkbox" checked id="newsletter-cb" />
+        <div style="margin-left: 10px;">
+          <div style="font-weight: 600; font-size: 14px;">TechStore Premium Newsletter</div>
+          <div style="font-size: 12px; color: #718096;">Exclusive deals, early access, and personalized offers</div>
+        </div>
+      </label>
+    </div>
+  </div>
+
+  <button class="btn-primary" style="width: 100%;">Continue to Payment →</button>
+</body>
+</html>
