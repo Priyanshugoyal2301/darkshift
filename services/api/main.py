@@ -53,7 +53,8 @@ from detection_engine import (
     analyze_page, compute_transparency_score, extract_prices_from_text,
     classify_page_state, PATTERN_META,
     compute_risk_assessment, compute_scan_coverage, extract_price_components,
-    assess_price_journey, classify_action_element,
+    assess_price_journey, classify_action_element, score_checkout_action,
+    NAVIGATION_NOISE_REGEX,
 )
 from price_extractor import extract_price_and_components
 
@@ -353,179 +354,293 @@ async def execute_live_scan(scan_id: str, url: str) -> None:
                         btn_el = all_clickable[idx] if idx < len(all_clickable) else None
 
                     if btn_el:
-                        await btn_el.click()
-                        await page.wait_for_timeout(2500)
+                        try:
+                            await btn_el.click(timeout=8000)
+                        except Exception as click_err:
+                            logs.append(AuditLogEntry(
+                                timestamp=format_ts(),
+                                stage="ACTION_NOTICE",
+                                message=f"Click interaction note: {str(click_err)[:70]}"
+                            ))
 
-                        # Check if reached Cart
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=3000)
+                        except Exception:
+                            await page.wait_for_timeout(2000)
+
+                        # VERIFY CART STATE BEFORE COMMIT (Never infer state from action alone)
+                        cart_verification = await page.evaluate("""() => {
+                            const url = window.location.href.toLowerCase();
+                            const isCartUrl = url.includes('/cart') || url.includes('/basket') || url.includes('/bag') || url.includes('/checkout');
+                            
+                            // Detect cart drawer / flyout / modal
+                            const drawerSelectors = [
+                                '[class*="cart-drawer" i]', '[class*="cart_drawer" i]', '[id*="cart-drawer" i]',
+                                '[class*="mini-cart" i]', '[class*="minicart" i]', '[id*="mini-cart" i]',
+                                '[class*="cart-modal" i]', '[class*="cart_modal" i]', '[data-testid*="cart" i]',
+                                '[class*="drawer-cart" i]', '[class*="side-cart" i]', '[class*="slide-cart" i]',
+                                '[aria-label*="cart" i]', '[role="dialog"][aria-label*="cart" i]',
+                                '[class*="cart-popup" i]', '[id*="cart-popup" i]'
+                            ];
+                            let hasDrawer = false;
+                            for (const sel of drawerSelectors) {
+                                const el = document.querySelector(sel);
+                                if (el && (el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0)) {
+                                    hasDrawer = true;
+                                    break;
+                                }
+                            }
+                            
+                            const text = (document.body.innerText || '').toLowerCase();
+                            const hasCartText = /(?:your\s+cart|your\s+bag|shopping\s+bag|subtotal|estimated\s+total|item\s+total|proceed\s+to\s+checkout|checkout\b)/i.test(text);
+                            const hasQuantityOrSubtotal = /(?:qty|quantity|subtotal|items?\s*in\s*cart|view\s*cart)/i.test(text);
+                            
+                            return {
+                                is_cart_url: isCartUrl,
+                                has_drawer: hasDrawer,
+                                has_cart_text: hasCartText,
+                                has_quantity_or_subtotal: hasQuantityOrSubtotal,
+                                confirmed: isCartUrl || hasDrawer || (hasCartText && hasQuantityOrSubtotal)
+                            };
+                        }""")
+
+                        cart_confirmed = cart_verification.get("confirmed", False)
                         cart_url = page.url
                         html_p1 = await page.content()
                         text_p1 = await page.evaluate("() => document.body.innerText")
-                        p1, c1, meta1 = extract_price_and_components(html_p1, text_p1, stage="cart")
-                        p1_captured = p1 is not None and p1 > 0.0
 
-                        stages_scanned.append("cart")
+                        if cart_confirmed:
+                            p1, c1, meta1 = extract_price_and_components(html_p1, text_p1, stage="cart")
+                            p1_captured = p1 is not None and p1 > 0.0
 
-                        # Stage 2 screenshot
-                        ss_cart = None
-                        try:
-                            cart_ss_bytes = await page.screenshot(type="jpeg", quality=50)
-                            ss_cart = "data:image/jpeg;base64," + base64.b64encode(cart_ss_bytes).decode("utf-8")
-                        except Exception:
-                            pass
+                            stages_scanned.append("cart")
 
-                        price_stages.append(PriceStage(
-                            stage="cart",
-                            stage_label="2. Cart Review",
-                            total=p1,
-                            is_captured=p1_captured,
-                            currency="INR",
-                            components=c1,
-                            url=cart_url,
-                            screenshot_b64=ss_cart,
-                            extraction_source=meta1.source,
-                            extraction_confidence=meta1.confidence
-                        ))
+                            # Stage 2 screenshot
+                            ss_cart = None
+                            try:
+                                cart_ss_bytes = await page.screenshot(type="jpeg", quality=50)
+                                ss_cart = "data:image/jpeg;base64," + base64.b64encode(cart_ss_bytes).decode("utf-8")
+                            except Exception:
+                                pass
 
-                        if p1_captured and p0_captured:
-                            delta_str = f" (Δ01: +₹{p1 - p0:,.0f})" if p1 >= p0 else f" (Δ01: -₹{p0 - p1:,.0f})"
-                            msg = f"Cart review reached: P1: ₹{p1:,.0f}{delta_str} [{meta1.source}]"
-                        elif p1_captured:
-                            msg = f"Cart review reached: P1: ₹{p1:,.0f} [{meta1.source}]"
-                        else:
-                            msg = f"Cart review reached: P1: UNKNOWN (Price not captured) [{meta1.source}]"
-
-                        logs.append(AuditLogEntry(
-                            timestamp=format_ts(),
-                            stage="STAGE_2_CAPTURED",
-                            message=msg
-                        ))
-
-                        # Run detection rules on Cart page
-                        f_stage2, _ = analyze_page(cart_url, html_p1, text_p1)
-                        all_findings.extend(f_stage2)
-
-                        # ── STAGE 3: CONTEXTUAL PROCEED TO CHECKOUT ───────────────
-                        co_candidate_data = await page.evaluate("""() => {
-                            const list = [];
-                            const els = document.querySelectorAll('button, a, input[type="submit"], [role="button"]');
-                            els.forEach((el, index) => {
-                                const text = (el.innerText || el.value || '').trim();
-                                if (!text || text.length > 80) return;
-                                const form = el.closest('form');
-                                const formAction = form ? (form.getAttribute('action') || '') : '';
-                                const formInputs = form ? Array.from(form.querySelectorAll('input')).map(i => i.name || i.type || '') : [];
-                                if (el.offsetWidth || el.offsetHeight) {
-                                    list.push({ index: index, text: text, tag: el.tagName.toLowerCase(), id: el.id || '', form_action: formAction, form_inputs: formInputs });
-                                }
-                            });
-                            return list;
-                        }""")
-
-                        co_target = None
-                        for cand in co_candidate_data:
-                            dec = classify_action_element(
-                                text=cand["text"],
-                                tag=cand["tag"],
-                                form_context={"action": cand["form_action"], "inputs": cand["form_inputs"]},
-                                current_stage="cart"
-                            )
-                            if dec.action_tier == ActionPolicyTier.CAUTION and not dec.is_payment_context:
-                                co_target = (cand, dec)
-                                break
-                            elif dec.action_tier == ActionPolicyTier.BLOCKED:
-                                logs.append(AuditLogEntry(
-                                    timestamp=format_ts(),
-                                    stage="POLICY_BLOCKED",
-                                    message=f"Element '{dec.text}' classified as BLOCKED ({dec.reason}). Avoided."
-                                ))
-
-                        if co_target:
-                            t_cand, t_dec = co_target
-                            logs.append(AuditLogEntry(
-                                timestamp=format_ts(),
-                                stage="ACTION_CLICK",
-                                message=f"Navigating to Checkout Review via '{t_dec.text}'..."
+                            price_stages.append(PriceStage(
+                                stage="cart",
+                                stage_label="2. Cart Review",
+                                total=p1,
+                                is_captured=p1_captured,
+                                currency="INR",
+                                components=c1,
+                                url=cart_url,
+                                screenshot_b64=ss_cart,
+                                extraction_source=meta1.source,
+                                extraction_confidence=meta1.confidence
                             ))
 
-                            if t_cand.get("id"):
-                                checkout_btn = await page.query_selector(f"#{t_cand['id']}")
+                            if p1_captured and p0_captured:
+                                delta_str = f" (Δ01: +₹{p1 - p0:,.0f})" if p1 >= p0 else f" (Δ01: -₹{p0 - p1:,.0f})"
+                                msg = f"Cart review confirmed: P1: ₹{p1:,.0f}{delta_str} [{meta1.source}]"
+                            elif p1_captured:
+                                msg = f"Cart review confirmed: P1: ₹{p1:,.0f} [{meta1.source}]"
                             else:
-                                all_co_clickable = await page.query_selector_all('button, a, input[type="submit"], [role="button"]')
-                                c_idx = t_cand.get("index", 0)
-                                checkout_btn = all_co_clickable[c_idx] if c_idx < len(all_co_clickable) else None
+                                msg = f"Cart review confirmed: P1: UNKNOWN (Price not captured) [{meta1.source}]"
 
-                            if checkout_btn:
-                                await checkout_btn.click()
-                                await page.wait_for_timeout(2500)
+                            logs.append(AuditLogEntry(
+                                timestamp=format_ts(),
+                                stage="STAGE_2_CAPTURED",
+                                message=msg
+                            ))
 
-                                co_url = page.url
-                                html_p2 = await page.content()
-                                text_p2 = await page.evaluate("() => document.body.innerText")
+                            # Run detection rules on Cart page
+                            f_stage2, _ = analyze_page(cart_url, html_p1, text_p1)
+                            all_findings.extend(f_stage2)
 
-                                # Check if authentication barrier
-                                if any(k in text_p2.lower() for k in ["enter password", "sign in with", "otp"]):
-                                    logs.append(AuditLogEntry(
-                                        timestamp=format_ts(),
-                                        stage="CHECKOUT_BARRIER",
-                                        message="Authentication barrier encountered. Stopped before credential entry."
-                                    ))
+                            # ── STAGE 3: CONTEXTUAL PROCEED TO CHECKOUT ───────────────
+                            co_candidate_data = await page.evaluate("""() => {
+                                const list = [];
+                                const els = document.querySelectorAll('button, a, input[type="submit"], input[type="button"], [role="button"]');
+                                els.forEach((el, index) => {
+                                    const text = (el.innerText || el.value || '').trim();
+                                    if (!text || text.length > 80) return;
+                                    const isVisible = !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+                                    if (!isVisible) return;
+                                    
+                                    const href = el.getAttribute('href') || '';
+                                    const form = el.closest('form');
+                                    const formAction = form ? (form.getAttribute('action') || '') : '';
+                                    const formInputs = form ? Array.from(form.querySelectorAll('input')).map(i => i.name || i.type || '') : [];
+                                    const parent = el.parentElement;
+                                    const surrounding = parent ? (parent.innerText || '').slice(0, 200) : '';
+                                    
+                                    list.push({
+                                        index: index,
+                                        text: text,
+                                        tag: el.tagName.toLowerCase(),
+                                        id: el.id || '',
+                                        href: href,
+                                        form_action: formAction,
+                                        form_inputs: formInputs,
+                                        surrounding: surrounding
+                                    });
+                                });
+                                return list;
+                            }""")
+
+                            scored_targets = []
+                            for cand in co_candidate_data:
+                                score = score_checkout_action(
+                                    text=cand["text"],
+                                    href=cand["href"],
+                                    form_action=cand["form_action"],
+                                    surrounding_text=cand["surrounding"],
+                                    current_stage="cart"
+                                )
+                                dec = classify_action_element(
+                                    text=cand["text"],
+                                    tag=cand["tag"],
+                                    attributes={"href": cand["href"]},
+                                    form_context={"action": cand["form_action"], "inputs": cand["form_inputs"]},
+                                    current_stage="cart"
+                                )
+                                if dec.action_tier == ActionPolicyTier.BLOCKED:
+                                    continue
+                                if score >= 35.0 and not dec.is_payment_context:
+                                    scored_targets.append((cand, dec, score))
+
+                            scored_targets.sort(key=lambda x: x[2], reverse=True)
+                            co_target = scored_targets[0] if scored_targets else None
+
+                            if co_target:
+                                t_cand, t_dec, t_score = co_target
+                                logs.append(AuditLogEntry(
+                                    timestamp=format_ts(),
+                                    stage="ACTION_CLICK",
+                                    message=f"Navigating to Checkout Review via '{t_dec.text}' (Score: {t_score:.0f})..."
+                                ))
+
+                                if t_cand.get("id"):
+                                    checkout_btn = await page.query_selector(f"#{t_cand['id']}")
                                 else:
-                                    p2, c2, meta2 = extract_price_and_components(html_p2, text_p2, stage="checkout")
-                                    p2_captured = p2 is not None and p2 > 0.0
+                                    all_co_clickable = await page.query_selector_all('button, a, input[type="submit"], input[type="button"], [role="button"]')
+                                    c_idx = t_cand.get("index", 0)
+                                    checkout_btn = all_co_clickable[c_idx] if c_idx < len(all_co_clickable) else None
 
-                                    stages_scanned.append("checkout")
-                                    checkout_reached = True
-
-                                    # Stage 3 screenshot
-                                    ss_co = None
+                                if checkout_btn:
                                     try:
-                                        co_ss_bytes = await page.screenshot(type="jpeg", quality=50)
-                                        ss_co = "data:image/jpeg;base64," + base64.b64encode(co_ss_bytes).decode("utf-8")
-                                    except Exception:
-                                        pass
-
-                                    price_stages.append(PriceStage(
-                                        stage="checkout",
-                                        stage_label="3. Checkout Review",
-                                        total=p2,
-                                        is_captured=p2_captured,
-                                        currency="INR",
-                                        components=c2,
-                                        url=co_url,
-                                        screenshot_b64=ss_co,
-                                        extraction_source=meta2.source,
-                                        extraction_confidence=meta2.confidence
-                                    ))
-
-                                    if p2_captured and p0_captured:
-                                        delta_str = f" (Total Δ: +₹{p2 - p0:,.0f})" if p2 >= p0 else f" (Total Δ: -₹{p0 - p2:,.0f})"
-                                        msg = f"Final checkout observed: P2: ₹{p2:,.0f}{delta_str} [{meta2.source}]"
-                                    elif p2_captured:
-                                        msg = f"Final checkout observed: P2: ₹{p2:,.0f} [{meta2.source}]"
-                                    else:
-                                        msg = f"Final checkout observed: P2: UNKNOWN (Price not captured) [{meta2.source}]"
-
-                                    logs.append(AuditLogEntry(
-                                        timestamp=format_ts(),
-                                        stage="STAGE_3_CAPTURED",
-                                        message=msg
-                                    ))
-
-                                    f_stage3, _ = analyze_page(co_url, html_p2, text_p2)
-                                    all_findings.extend(f_stage3)
-
-                                    # Check for terminal payment trigger and enforce safety boundary
-                                    payment_check = await page.evaluate("""() => {
-                                        const btns = Array.from(document.querySelectorAll('button, input[type="submit"]'));
-                                        return btns.map(b => (b.innerText || b.value || '').trim()).filter(t => /pay|order|purchase/i.test(t));
-                                    }""")
-                                    if payment_check:
+                                        await checkout_btn.click(timeout=8000)
+                                    except Exception as co_click_err:
                                         logs.append(AuditLogEntry(
                                             timestamp=format_ts(),
-                                            stage="POLICY_TERMINATION",
-                                            message=f"Terminal payment trigger detected: '{payment_check[0]}'. Crawl safely stopped before transaction execution."
+                                            stage="ACTION_NOTICE",
+                                            message=f"Checkout click notice: {str(co_click_err)[:70]}"
                                         ))
 
+                                    try:
+                                        await page.wait_for_load_state("networkidle", timeout=3500)
+                                    except Exception:
+                                        await page.wait_for_timeout(2500)
+
+                                    co_url = page.url
+                                    html_p2 = await page.content()
+                                    text_p2 = await page.evaluate("() => document.body.innerText")
+
+                                    # Check if authentication barrier
+                                    if any(k in text_p2.lower() for k in ["enter password", "sign in with", "otp"]):
+                                        logs.append(AuditLogEntry(
+                                            timestamp=format_ts(),
+                                            stage="CHECKOUT_BARRIER",
+                                            message="Authentication barrier encountered. Stopped before credential entry."
+                                        ))
+                                    else:
+                                        # VERIFY CHECKOUT STATE BEFORE COMMIT
+                                        checkout_verification = await page.evaluate("""() => {
+                                            const url = window.location.href.toLowerCase();
+                                            const isCheckoutUrl = url.includes('checkout') || url.includes('/shipping') || url.includes('/payment') || url.includes('/billing') || url.includes('/review-order');
+                                            
+                                            const text = (document.body.innerText || '').toLowerCase();
+                                            const hasCheckoutHeaders = /(?:order\s+summary|payment\s+method|billing\s+address|shipping\s+address|amount\s+payable|place\s+order|review\s+order|delivery\s+address|customer\s+information|contact\s+information)/i.test(text);
+                                            
+                                            return {
+                                                is_checkout_url: isCheckoutUrl,
+                                                has_checkout_headers: hasCheckoutHeaders,
+                                                confirmed: isCheckoutUrl || hasCheckoutHeaders
+                                            };
+                                        }""")
+
+                                        if checkout_verification.get("confirmed", False):
+                                            p2, c2, meta2 = extract_price_and_components(html_p2, text_p2, stage="checkout")
+                                            p2_captured = p2 is not None and p2 > 0.0
+
+                                            stages_scanned.append("checkout")
+                                            checkout_reached = True
+
+                                            # Stage 3 screenshot
+                                            ss_co = None
+                                            try:
+                                                co_ss_bytes = await page.screenshot(type="jpeg", quality=50)
+                                                ss_co = "data:image/jpeg;base64," + base64.b64encode(co_ss_bytes).decode("utf-8")
+                                            except Exception:
+                                                pass
+
+                                            price_stages.append(PriceStage(
+                                                stage="checkout",
+                                                stage_label="3. Checkout Review",
+                                                total=p2,
+                                                is_captured=p2_captured,
+                                                currency="INR",
+                                                components=c2,
+                                                url=co_url,
+                                                screenshot_b64=ss_co,
+                                                extraction_source=meta2.source,
+                                                extraction_confidence=meta2.confidence
+                                            ))
+
+                                            if p2_captured and p0_captured:
+                                                delta_str = f" (Total Δ: +₹{p2 - p0:,.0f})" if p2 >= p0 else f" (Total Δ: -₹{p0 - p2:,.0f})"
+                                                msg = f"Final checkout observed: P2: ₹{p2:,.0f}{delta_str} [{meta2.source}]"
+                                            elif p2_captured:
+                                                msg = f"Final checkout observed: P2: ₹{p2:,.0f} [{meta2.source}]"
+                                            else:
+                                                msg = f"Final checkout observed: P2: UNKNOWN (Price not captured) [{meta2.source}]"
+
+                                            logs.append(AuditLogEntry(
+                                                timestamp=format_ts(),
+                                                stage="STAGE_3_CAPTURED",
+                                                message=msg
+                                            ))
+
+                                            f_stage3, _ = analyze_page(co_url, html_p2, text_p2)
+                                            all_findings.extend(f_stage3)
+
+                                            # Check for terminal payment trigger and enforce safety boundary
+                                            payment_check = await page.evaluate("""() => {
+                                                const btns = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+                                                return btns.map(b => (b.innerText || b.value || '').trim()).filter(t => /pay|order|purchase/i.test(t));
+                                            }""")
+                                            if payment_check:
+                                                logs.append(AuditLogEntry(
+                                                    timestamp=format_ts(),
+                                                    stage="POLICY_TERMINATION",
+                                                    message=f"Terminal payment trigger detected: '{payment_check[0]}'. Crawl safely stopped before transaction execution."
+                                                ))
+                                        else:
+                                            checkout_reached = False
+                                            logs.append(AuditLogEntry(
+                                                timestamp=format_ts(),
+                                                stage="STATE_TRANSITION_FAILED",
+                                                message=f"Checkout review state could not be confirmed after clicking '{t_dec.text}'. Final observed price remains None."
+                                            ))
+                            else:
+                                logs.append(AuditLogEntry(
+                                    timestamp=format_ts(),
+                                    stage="ACTION_NOTICE",
+                                    message="No validated checkout CTA identified in cart state. Halting before unverified navigation."
+                                ))
+                        else:
+                            logs.append(AuditLogEntry(
+                                timestamp=format_ts(),
+                                stage="STATE_TRANSITION_FAILED",
+                                message="Cart review state could not be verified after Add to Cart action. Purchase journey stopped at listing stage."
+                            ))
                 except Exception as click_e:
                     logs.append(AuditLogEntry(timestamp=format_ts(), stage="ACTION_NOTICE", message=f"Action interaction notice: {str(click_e)[:80]}"))
             else:

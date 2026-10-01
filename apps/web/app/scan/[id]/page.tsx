@@ -84,7 +84,7 @@ interface PriceJourney {
   component_explanations?: PriceComponentExplanation[];
   new_charges: PriceComponent[];
   reconciled_carryover_note?: string;
-  dark_pattern_assessment?: "DETECTED" | "POTENTIAL_SIGNAL" | "EVALUATED_CLEAN" | "INCONCLUSIVE";
+  dark_pattern_assessment?: "DETECTED" | "POTENTIAL_SIGNAL" | "EVALUATED_CLEAN" | "INCONCLUSIVE" | "PRICE_CHANGE_DETECTED" | "NOT_EVALUATED";
   is_drip_pricing: boolean;
   potential_drip?: boolean;
   checkout_reached: boolean;
@@ -267,11 +267,13 @@ export default function DualModeAuditPage({
   const stageP1 = stages.find((s) => s.stage === "cart");
   const stageP2 = stages.find((s) => s.stage === "checkout");
 
-  const p0 = stageP0?.is_captured ? stageP0.total : journey?.initial_price;
-  const p1 = stageP1?.is_captured ? stageP1.total : journey?.cart_price;
-  const p2 = stageP2?.is_captured ? stageP2.total : journey?.final_observed_price;
-
   const stagesScanned = coverage?.stages_scanned || stages.map((s) => s.stage);
+  const checkoutReached = stagesScanned.includes("checkout") || journey?.checkout_reached === true;
+  const cartReached = stagesScanned.includes("cart");
+
+  const p0 = (stageP0?.is_captured && stageP0.total != null) ? stageP0.total : (journey?.initial_price ?? null);
+  const p1 = cartReached ? ((stageP1?.is_captured && stageP1.total != null) ? stageP1.total : (journey?.cart_price ?? null)) : null;
+  const p2 = checkoutReached ? ((stageP2?.is_captured && stageP2.total != null) ? stageP2.total : (journey?.final_observed_price ?? null)) : null;
 
   // Extract clean hostname for title
   let hostname = "example.com";
@@ -402,81 +404,113 @@ export default function DualModeAuditPage({
               </div>
             </section>
 
-            {/* Main Result Card (Exact Layout from Specification) */}
-            <section className="bg-white border border-[#E5E7EB] rounded-lg p-6 shadow-xs space-y-4">
-              <div className="text-xs font-semibold text-[#6B7280] uppercase tracking-wider">
-                Risk assessment
-              </div>
-
-              <div className="flex items-baseline gap-3">
-                <span
-                  className={`text-3xl font-bold tracking-tight ${
-                    risk.risk_level === "HIGH"
-                      ? "text-[#DC2626]"
-                      : risk.risk_level === "ELEVATED"
-                      ? "text-[#B45309]"
-                      : risk.risk_level === "UNDETERMINED"
-                      ? "text-[#6B7280]"
-                      : "text-[#15803D]"
-                  }`}
-                >
-                  {risk.risk_level}
-                </span>
-
-                {risk.risk_level === "UNDETERMINED" && (
-                  <span className="text-xs text-[#6B7280] bg-[#F9FAFB] px-2 py-0.5 rounded border border-[#E5E7EB]">
-                    Inconclusive checkout coverage
-                  </span>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-4 text-sm text-[#4B5563]">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-[#2563EB]"></span>
-                  <span>
-                    {findings.length} potential {findings.length === 1 ? "signal" : "signals"} detected
+            {/* Main Result: Separate Overall Risk, Price Assessment, Journey Coverage */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* 1. Overall Risk */}
+              <div className="bg-white border border-[#E5E7EB] rounded-lg p-5 shadow-xs space-y-2">
+                <div className="text-xs font-semibold text-[#6B7280] uppercase tracking-wider">
+                  Overall risk
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span
+                    className={`text-2xl font-bold tracking-tight ${
+                      risk.risk_level === "HIGH"
+                        ? "text-[#DC2626]"
+                        : risk.risk_level === "ELEVATED"
+                        ? "text-[#B45309]"
+                        : risk.risk_level === "UNDETERMINED"
+                        ? "text-[#6B7280]"
+                        : "text-[#15803D]"
+                    }`}
+                  >
+                    {risk.risk_level}
                   </span>
                 </div>
-                <span>•</span>
-                <div className="flex items-center gap-1.5">
-                  <span>
-                    {highFindingsCount} high-confidence {highFindingsCount === 1 ? "finding" : "findings"}
+                <p className="text-xs text-[#4B5563] leading-relaxed">
+                  {findings.length === 0
+                    ? "No deceptive patterns observed on evaluated stages."
+                    : `${findings.length} dark-pattern signal(s) detected (${highFindingsCount} high-confidence).`}
+                </p>
+              </div>
+
+              {/* 2. Price Assessment */}
+              <div className="bg-white border border-[#E5E7EB] rounded-lg p-5 shadow-xs space-y-2">
+                <div className="text-xs font-semibold text-[#6B7280] uppercase tracking-wider">
+                  Price assessment
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span
+                    className={`text-2xl font-bold tracking-tight ${
+                      journey?.is_drip_pricing || journey?.dark_pattern_assessment === "DETECTED"
+                        ? "text-[#DC2626]"
+                        : !checkoutReached || !cartReached || p1 == null || p2 == null || journey?.dark_pattern_assessment === "INCONCLUSIVE"
+                        ? "text-[#B45309]"
+                        : journey?.dark_pattern_assessment === "PRICE_CHANGE_DETECTED"
+                        ? "text-[#B45309]"
+                        : "text-[#15803D]"
+                    }`}
+                  >
+                    {journey?.is_drip_pricing || journey?.dark_pattern_assessment === "DETECTED"
+                      ? "DECEPTIVE DRIP"
+                      : !checkoutReached || !cartReached || p1 == null || p2 == null || journey?.dark_pattern_assessment === "INCONCLUSIVE"
+                      ? "INCONCLUSIVE"
+                      : journey?.dark_pattern_assessment === "PRICE_CHANGE_DETECTED"
+                      ? "PRICE CHANGE"
+                      : "CLEAN"}
+                  </span>
+                </div>
+                <p className="text-xs text-[#4B5563] leading-relaxed">
+                  {journey?.is_drip_pricing || journey?.dark_pattern_assessment === "DETECTED"
+                    ? `Mandatory fees escalated payable total by +₹${journey?.delta_total?.toLocaleString()}.`
+                    : !checkoutReached || !cartReached || p1 == null || p2 == null || journey?.dark_pattern_assessment === "INCONCLUSIVE"
+                    ? "Purchase flow could not reach final checkout review to verify payable total."
+                    : "Advertised and observed final payable prices remained transparent."}
+                </p>
+              </div>
+
+              {/* 3. Journey Coverage */}
+              <div className="bg-white border border-[#E5E7EB] rounded-lg p-5 shadow-xs space-y-2">
+                <div className="text-xs font-semibold text-[#6B7280] uppercase tracking-wider">
+                  Journey coverage
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-2xl font-bold text-[#111827]">
+                    {coverage?.coverage_score ?? (checkoutReached ? 100 : cartReached ? 66 : 31)}%
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 text-xs pt-0.5">
+                  <span className="flex items-center gap-1 text-[#374151] font-medium">
+                    Product <span className="text-[#15803D] font-bold">✓</span>
+                  </span>
+                  <span className="text-[#9CA3AF]">|</span>
+                  <span className="flex items-center gap-1 text-[#374151] font-medium">
+                    Cart{" "}
+                    {cartReached ? (
+                      p1 != null ? (
+                        <span className="text-[#15803D] font-bold">✓</span>
+                      ) : (
+                        <span className="text-[#B45309] font-bold" title="Price not captured">?</span>
+                      )
+                    ) : (
+                      <span className="text-[#DC2626] font-bold">✕</span>
+                    )}
+                  </span>
+                  <span className="text-[#9CA3AF]">|</span>
+                  <span className="flex items-center gap-1 text-[#374151] font-medium">
+                    Checkout{" "}
+                    {checkoutReached ? (
+                      p2 != null ? (
+                        <span className="text-[#15803D] font-bold">✓</span>
+                      ) : (
+                        <span className="text-[#B45309] font-bold" title="Price not captured">?</span>
+                      )
+                    ) : (
+                      <span className="text-[#DC2626] font-bold">✕</span>
+                    )}
                   </span>
                 </div>
               </div>
-
-              {/* Coverage Integrity Checkmarks */}
-              <div className="pt-3 border-t border-[#F3F4F6] flex items-center gap-6 text-xs text-[#374151]">
-                <span className="flex items-center gap-1.5 font-medium">
-                  <span>Product</span>
-                  <span className="text-[#15803D] font-bold">✓</span>
-                </span>
-                <span className="flex items-center gap-1.5 font-medium">
-                  <span>Cart</span>
-                  {stagesScanned.includes("cart") ? (
-                    stageP1?.is_captured !== false ? (
-                      <span className="text-[#15803D] font-bold">✓</span>
-                    ) : (
-                      <span className="text-[#B45309] font-bold" title="Price not captured">?</span>
-                    )
-                  ) : (
-                    <span className="text-[#9CA3AF]">Not reached</span>
-                  )}
-                </span>
-                <span className="flex items-center gap-1.5 font-medium">
-                  <span>Checkout</span>
-                  {stagesScanned.includes("checkout") ? (
-                    stageP2?.is_captured !== false ? (
-                      <span className="text-[#15803D] font-bold">✓</span>
-                    ) : (
-                      <span className="text-[#B45309] font-bold" title="Price not captured">?</span>
-                    )
-                  ) : (
-                    <span className="text-[#9CA3AF]">Not reached</span>
-                  )}
-                </span>
-              </div>
-            </section>
+            </div>
 
             {/* Price Journey: Financial Comparison Table */}
             {journey && stages.length > 0 && (
@@ -492,6 +526,10 @@ export default function DualModeAuditPage({
                   {journey.delta_total && journey.delta_total > 0 ? (
                     <span className="text-xs font-semibold px-2.5 py-1 rounded bg-red-50 text-[#DC2626] border border-red-200">
                       Total increase +₹{journey.delta_total.toLocaleString()} (+{journey.percentage_increase}%)
+                    </span>
+                  ) : !checkoutReached || !cartReached || p1 == null || p2 == null ? (
+                    <span className="text-xs font-semibold px-2.5 py-1 rounded bg-amber-50 text-[#B45309] border border-amber-200">
+                      Price assessment inconclusive
                     </span>
                   ) : (
                     <span className="text-xs font-semibold px-2.5 py-1 rounded bg-green-50 text-[#15803D] border border-green-200">
@@ -522,11 +560,13 @@ export default function DualModeAuditPage({
                       )}
                     </div>
                     <div className="text-2xl font-bold text-[#111827]">
-                      {p1 !== null && p1 !== undefined
-                        ? `₹${p1.toLocaleString()}`
-                        : stagesScanned.includes("cart")
-                        ? "Not captured"
-                        : "Not reached"}
+                      {!cartReached ? (
+                        <span className="text-gray-400 font-normal text-lg">Not reached</span>
+                      ) : p1 !== null && p1 !== undefined ? (
+                        `₹${p1.toLocaleString()}`
+                      ) : (
+                        <span className="text-amber-600 font-normal text-lg">Not captured</span>
+                      )}
                     </div>
                     <div className="text-[11px] text-[#9CA3AF]">Basket review stage</div>
                   </div>
@@ -542,15 +582,27 @@ export default function DualModeAuditPage({
                       )}
                     </div>
                     <div className="text-2xl font-bold text-[#111827]">
-                      {p2 !== null && p2 !== undefined
-                        ? `₹${p2.toLocaleString()}`
-                        : stagesScanned.includes("checkout")
-                        ? "Not captured"
-                        : "Not reached"}
+                      {!checkoutReached ? (
+                        <span className="text-gray-400 font-normal text-lg">Not reached</span>
+                      ) : p2 !== null && p2 !== undefined ? (
+                        `₹${p2.toLocaleString()}`
+                      ) : (
+                        <span className="text-amber-600 font-normal text-lg">Not captured</span>
+                      )}
                     </div>
                     <div className="text-[11px] text-[#9CA3AF]">Final observed payable total</div>
                   </div>
                 </div>
+
+                {(!checkoutReached || !cartReached || p1 == null || p2 == null) && (
+                  <div className="p-3 rounded-md bg-amber-50/70 border border-amber-200/80 text-xs text-[#92400E] flex items-start gap-2">
+                    <span className="font-bold text-amber-600 mt-0.5">ⓘ</span>
+                    <div>
+                      <span className="font-semibold">Pricing could not be fully evaluated:</span>{" "}
+                      The purchase journey could not be completed through cart review or final checkout, so DarkShield could not verify the final payable price.
+                    </div>
+                  </div>
+                )}
 
                 {/* What changed? Table */}
                 {reconciledCharges.length > 0 && (
@@ -944,6 +996,8 @@ export default function DualModeAuditPage({
                   <span className="text-blue-400 font-bold">DRIP PRICING CALCULATION: </span>
                   {journey?.is_drip_pricing
                     ? `CONFIRMED: Mandatory charges withheld from initial stage P0 (₹${p0?.toLocaleString() || 0}) and escalated to P2 (₹${p2?.toLocaleString() || 0}) without prior disclosure.`
+                    : !checkoutReached
+                    ? "INCONCLUSIVE: Final checkout stage was not reached, so mandatory fee disclosure remains unverified."
                     : "EVALUATED_CLEAN: No undisclosed mandatory fee escalation observed."}
                 </div>
               </div>

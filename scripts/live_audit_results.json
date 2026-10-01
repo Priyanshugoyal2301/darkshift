@@ -1,0 +1,79 @@
+[
+  {
+    "target": "The Club Factory",
+    "url": "https://theclubfactory.in/",
+    "scan_id": "7f1d196e7a9443a18a00e5288fcfb357",
+    "P0": "\u20b91,999",
+    "P1": "null",
+    "P2": "null",
+    "cart_reached": true,
+    "checkout_reached": false,
+    "price_assessment": "INCONCLUSIVE",
+    "journey_coverage": "31%",
+    "findings_count": 0,
+    "findings": [],
+    "evidence_text": [],
+    "evidence_selector": [],
+    "last_successful_action": "[STAGE_2_CAPTURED] Cart review confirmed: P1: UNKNOWN (Price not captured) [NONE]",
+    "failed_action": "[ACTION_NOTICE] No validated checkout CTA identified in cart state. Halting before unverified navigation."
+  },
+  {
+    "target": "Amazon India",
+    "url": "https://www.amazon.in/dp/B08N5WRWNW",
+    "scan_id": "e05742473e4341f3b207f12a7cfa3026",
+    "P0": "\u20b9500",
+    "P1": "null",
+    "P2": "null",
+    "cart_reached": false,
+    "checkout_reached": false,
+    "price_assessment": "INCONCLUSIVE",
+    "journey_coverage": "23%",
+    "findings_count": 1,
+    "findings": [
+      "FALSE_URGENCY: Countdown Timer Detected (LOW)"
+    ],
+    "evidence_text": [
+      "0:00",
+      "1:20"
+    ],
+    "evidence_selector": [],
+    "last_successful_action": "[STAGE_1_CAPTURED] Product page loaded: 'Apple 2020 MacBook Pro (13.3-inch/33.78 cm, M1 chi' | Advertised Price P0: \u20b9500 [REGEX_PROXIMITY]",
+    "failed_action": "[CRAWL_BOUNDARY] Single-page audit completed (no safe action candidate identified without payment commitment)."
+  },
+  {
+    "target": "Flipkart",
+    "url": "https://www.flipkart.com/",
+    "scan_id": "562066adc0d24807aef69e653a18292d",
+    "P0": "\u20b999",
+    "P1": "null",
+    "P2": "null",
+    "cart_reached": false,
+    "checkout_reached": false,
+    "price_assessment": "INCONCLUSIVE",
+    "journey_coverage": "15%",
+    "findings_count": 0,
+    "findings": [],
+    "evidence_text": [],
+    "evidence_selector": [],
+    "last_successful_action": "[STAGE_1_CAPTURED] Product page loaded: 'Online Shopping India Mobile, Cameras, Lifestyle &' | Advertised Price P0: \u20b999 [REGEX_PROXIMITY]",
+    "failed_action": "[CRAWL_BOUNDARY] Single-page audit completed (no safe action candidate identified without payment commitment)."
+  },
+  {
+    "target": "Myntra",
+    "url": "https://www.myntra.com/",
+    "scan_id": "5afbae2b1be14b1c9194991944353418",
+    "P0": "UNKNOWN",
+    "P1": "null",
+    "P2": "null",
+    "cart_reached": false,
+    "checkout_reached": false,
+    "price_assessment": "INCONCLUSIVE",
+    "journey_coverage": "15%",
+    "findings_count": 0,
+    "findings": [],
+    "evidence_text": [],
+    "evidence_selector": [],
+    "last_successful_action": "[STAGE_1_CAPTURED] Product page loaded: 'Target Website' | Advertised Price P0: UNKNOWN (Not captured)",
+    "failed_action": "[CRAWL_BOUNDARY] Single-page audit completed (no safe action candidate identified without payment commitment)."
+  }
+]

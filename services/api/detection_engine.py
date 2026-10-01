@@ -226,20 +226,56 @@ class PartialFinding:
     raw_title: str = ""
 
 
+# ─── Evidence Eligibility Gate ───────────────────────────────────────────────
+
+def is_user_facing_evidence(snippet: str) -> bool:
+    """
+    Verifies that an extracted snippet is human-readable consumer webpage text
+    and not programming code, script source, or technical artifacts.
+    """
+    if not snippet or not snippet.strip():
+        return False
+    s = snippet.strip()
+    code_indicators = [
+        "const ", "var ", "let ", "function", "=>", "document.", "window.",
+        "ROUTE_URL", "prototype", "addEventListener", "<script", "</script>",
+        "http://", "https://", "codking", "eval(", "{", "}", ";", "typeof "
+    ]
+    if any(k in s for k in code_indicators):
+        return False
+    if not re.search(r'[A-Za-z0-9]', s):
+        return False
+    return True
+
+
 # ─── Rule Engine ─────────────────────────────────────────────────────────────
 
 def run_rule_engine(soup: BeautifulSoup, text: str, url: str) -> list[PartialFinding]:
     findings: list[PartialFinding] = []
+
+    # Evidence Eligibility Gate: Strip non-visible and script elements from DOM tree
+    for tag in soup(["script", "style", "noscript", "template", "svg", "head", "iframe"]):
+        tag.decompose()
+
     page_state = classify_page_state(url, text)
 
     # ── Countdown timers ──────────────────────────────────────────────────────
     timer_els = soup.select("[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer'],[data-countdown]")
-    timer_texts = [el.get_text(strip=True) for el in timer_els if PATTERNS["COUNTDOWN_TIMER"].search(el.get_text())]
+    timer_texts = []
+    for el in timer_els:
+        t = el.get_text(separator=" ", strip=True)
+        if t and PATTERNS["COUNTDOWN_TIMER"].search(t) and is_user_facing_evidence(t):
+            timer_texts.append(t[:100])
 
-    # Also search all text nodes
+    # Also search clean text nodes (strictly visible text, never code)
     if not timer_texts:
-        for el in soup.find_all(text=PATTERNS["COUNTDOWN_TIMER"]):
-            timer_texts.append(str(el).strip()[:100])
+        for el in soup.find_all(string=PATTERNS["COUNTDOWN_TIMER"]):
+            parent_name = el.parent.name if el.parent else ""
+            if parent_name in ("script", "style", "noscript", "template", "svg", "code", "pre"):
+                continue
+            s = str(el).strip()
+            if s and is_user_facing_evidence(s):
+                timer_texts.append(s[:100])
 
     if timer_texts:
         findings.append(PartialFinding(
@@ -708,6 +744,8 @@ def analyze_page(
         soup = BeautifulSoup(html, "lxml")
     except Exception:
         soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript", "template", "svg", "head", "iframe"]):
+        tag.decompose()
     text = visible_text or soup.get_text(separator=" ", strip=True)
 
     partial_findings = run_rule_engine(soup, text, url)
@@ -741,6 +779,68 @@ def analyze_page(
 
 # ─── Contextual Action Policy Classification ────────────────────────────────
 
+NAVIGATION_NOISE_REGEX = re.compile(
+    r'\b(skip to (?:content|main|navigation)|skip navigation|accessibility|'
+    r'home|about|about us|contact|contact us|help|faq|faqs|terms|terms of service|'
+    r'privacy|privacy policy|search|menu|back|view details|read more|'
+    r'continue reading|login|sign in|sign up|register|track order|blog|'
+    r'newsletter|wishlist|customer service|returns|refund policy|careers|'
+    r'all categories|my account|order history|view profile)\b',
+    re.I
+)
+
+
+def score_checkout_action(
+    text: str,
+    href: str = "",
+    form_action: str = "",
+    surrounding_text: str = "",
+    current_stage: str = "cart"
+) -> float:
+    """
+    Computes a composite checkout confidence score based on:
+    text_match + href_match + surrounding_context + form_context + cart_state.
+    Rejects navigation noise immediately with score 0.0.
+    """
+    clean_text = text.strip().lower()
+    if NAVIGATION_NOISE_REGEX.search(clean_text):
+        return 0.0
+
+    score = 0.0
+
+    # 1. Text match
+    if re.search(r'\b(proceed to checkout|go to checkout|continue to checkout|secure checkout|checkout now)\b', clean_text):
+        score += 65.0
+    elif re.search(r'\bcheckout\b', clean_text):
+        score += 55.0
+    elif re.search(r'\b(review order|order summary)\b', clean_text):
+        score += 45.0
+    elif re.search(r'\b(continue|proceed|next|next step)\b', clean_text):
+        if current_stage == "cart":
+            score += 25.0
+        else:
+            score += 5.0
+
+    # 2. Href match
+    clean_href = href.lower()
+    if "checkout" in clean_href:
+        score += 30.0
+    elif "cart" in clean_href:
+        score += 15.0
+
+    # 3. Form action
+    clean_form = form_action.lower()
+    if "checkout" in clean_form:
+        score += 25.0
+
+    # 4. Surrounding context
+    ctx = surrounding_text.lower()
+    if any(k in ctx for k in ("subtotal", "order total", "cart", "item total", "estimated total", "grand total", "total:")):
+        score += 20.0
+
+    return score
+
+
 def classify_action_element(
     text: str,
     tag: str = "button",
@@ -759,6 +859,17 @@ def classify_action_element(
     btn_type = attributes.get("type", "").lower()
     form_action = form_context.get("action", "").lower()
     form_inputs = [str(inp).lower() for inp in form_context.get("inputs", [])]
+
+    # 0. NAVIGATION NOISE: Immediately reject header/footer/utility navigation
+    if NAVIGATION_NOISE_REGEX.search(clean_text):
+        return ActionClassification(
+            text=text,
+            action_tier=ActionPolicyTier.BLOCKED,
+            reason=f"Ignored: Common site navigation / accessibility element '{text}'.",
+            target_url=href,
+            form_action=form_action,
+            is_payment_context=False
+        )
 
     is_payment_context = any(
         k in form_action or any(k in inp for inp in form_inputs)
@@ -813,7 +924,7 @@ def classify_action_element(
             )
 
     # 2. SAFE: Reversible inspection actions adding items to basket
-    safe_phrases = ["add to cart", "add to bag", "add to basket", "view cart"]
+    safe_phrases = ["add to cart", "add to bag", "add to basket", "view cart", "select seat", "enroll"]
     if any(p in clean_text for p in safe_phrases) and not is_payment_context:
         return ActionClassification(
             text=text,
@@ -824,13 +935,35 @@ def classify_action_element(
             is_payment_context=False
         )
 
-    # 3. CAUTION: Navigational transitions between purchase stages
-    caution_phrases = [
-        "book now", "continue booking", "proceed to checkout",
-        "select seat", "select payment method", "continue",
-        "proceed", "checkout", "next step", "enroll"
+    # 3. Generic action terms: require explicit cart purchase flow context
+    generic_phrases = ["continue", "next", "proceed", "next step", "go"]
+    if any(clean_text == p or clean_text.startswith(p + " ") for p in generic_phrases):
+        if current_stage == "cart":
+            return ActionClassification(
+                text=text,
+                action_tier=ActionPolicyTier.CAUTION,
+                reason=f"Caution action: Generic navigation '{text}' accepted in active cart context.",
+                target_url=href,
+                form_action=form_action,
+                is_payment_context=False
+            )
+        else:
+            return ActionClassification(
+                text=text,
+                action_tier=ActionPolicyTier.BLOCKED,
+                reason=f"Ignored: Generic navigation '{text}' without active cart flow context.",
+                target_url=href,
+                form_action=form_action,
+                is_payment_context=False
+            )
+
+    # 4. CAUTION: Explicit checkout transitions between purchase stages
+    checkout_phrases = [
+        "proceed to checkout", "go to checkout", "continue to checkout",
+        "secure checkout", "checkout now", "checkout", "review order",
+        "order summary", "book now", "continue booking"
     ]
-    if any(p in clean_text for p in caution_phrases):
+    if any(p in clean_text for p in checkout_phrases):
         if "book now" in clean_text and current_stage in ("cart", "checkout"):
             return ActionClassification(
                 text=text,
@@ -850,10 +983,11 @@ def classify_action_element(
             is_payment_context=False
         )
 
+    # 5. Default fallback: reject arbitrary unrecognized elements to avoid misclicks
     return ActionClassification(
         text=text,
-        action_tier=ActionPolicyTier.CAUTION,
-        reason=f"Context-dependent action '{text}'.",
+        action_tier=ActionPolicyTier.BLOCKED,
+        reason=f"Ignored: Unrecognized action '{text}' without verified purchase intent.",
         target_url=href,
         form_action=form_action,
         is_payment_context=is_payment_context
@@ -891,14 +1025,15 @@ def assess_price_journey(
         ), []
 
     checkout_reached = "checkout" in stages_scanned
+    cart_reached = "cart" in stages_scanned
 
     stage_p0 = next((s for s in price_stages if s.stage == "product"), None)
     stage_p1 = next((s for s in price_stages if s.stage == "cart"), None)
     stage_p2 = next((s for s in price_stages if s.stage == "checkout"), None)
 
     p0 = stage_p0.total if (stage_p0 and stage_p0.is_captured) else None
-    p1 = stage_p1.total if (stage_p1 and stage_p1.is_captured) else None
-    p2 = stage_p2.total if (stage_p2 and stage_p2.is_captured) else None
+    p1 = stage_p1.total if (cart_reached and stage_p1 and stage_p1.is_captured) else None
+    p2 = stage_p2.total if (checkout_reached and stage_p2 and stage_p2.is_captured) else None
 
     # Mathematical Deltas
     delta_01 = round(max(0.0, p1 - p0), 2) if (p0 is not None and p1 is not None) else None
@@ -1100,24 +1235,37 @@ def assess_price_journey(
                            f"Mandatory Escalation: +₹{delta_total:,.0f}"],
             detection_methods=[DetectionMethod.PRICE_JOURNEY]
         ))
-    elif has_only_legitimate_fees and delta_total is not None:
+    elif has_only_legitimate_fees and delta_total is not None and (checkout_reached or cart_reached):
         dark_assessment = DarkPatternAssessmentStatus.EVALUATED_CLEAN
         is_drip = False
         explanation = f"Price increased by ₹{delta_total:,.0f} (+{pct}%) purely due to standard variable delivery charges disclosed at cart. No deceptive drip pricing detected."
-    elif not checkout_reached and (delta_total is None or delta_total == 0):
+    elif not checkout_reached or not cart_reached or p1 is None or p2 is None:
         dark_assessment = DarkPatternAssessmentStatus.INCONCLUSIVE
         is_drip = False
-        explanation = "Purchase flow evaluated through product listing; final checkout review was not reached. Mandatory fee disclosure remains inconclusive."
+        if not cart_reached or p1 is None:
+            explanation = "Purchase flow evaluated through product listing; cart review was not reached or captured. Mandatory fee disclosure remains inconclusive."
+        else:
+            explanation = "Purchase flow evaluated through cart; final checkout review was not reached or captured. Mandatory fee disclosure remains inconclusive."
+    elif delta_total is not None and delta_total > 0:
+        dark_assessment = DarkPatternAssessmentStatus.PRICE_CHANGE_DETECTED
+        is_drip = False
+        explanation = f"Price changed by ₹{delta_total:,.0f} (+{pct}%) across journey."
     else:
         dark_assessment = DarkPatternAssessmentStatus.EVALUATED_CLEAN
         is_drip = False
         explanation = "All pricing elements remained constant and transparent across evaluated stages."
 
+    # Strict Invariant Enforcement:
+    # 1. P2 may only have a value if checkout_reached == True
+    # 2. P1 may only have a value if cart_reached == True
+    final_observed_price = p2 if checkout_reached else None
+    cart_price = p1 if cart_reached else None
+
     journey = PriceJourney(
         stages=price_stages,
         initial_price=p0,
-        cart_price=p1,
-        final_observed_price=p2 or p1 or p0,
+        cart_price=cart_price,
+        final_observed_price=final_observed_price,
         delta_01=delta_01,
         delta_12=delta_12,
         delta_total=delta_total,
