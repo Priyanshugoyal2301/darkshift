@@ -159,6 +159,9 @@ export default function DualModeAuditPage({ params }: { params: Promise<{ id: st
             {/* LEFT COLUMN: Identity & Risk (35%) */}
             <div className="w-full lg:w-[35%] lg:sticky lg:top-24 space-y-8">
               <div className="space-y-2">
+                <div className="text-[10px] font-bold tracking-widest text-gray-400 uppercase">
+                  INSPECTION COMPLETE · {findings.length} FINDINGS
+                </div>
                 <h1 className="text-2xl font-bold tracking-tight text-gray-900 leading-tight">
                   {scan?.target_metadata?.title || "Evaluating Website"}
                 </h1>
@@ -179,13 +182,7 @@ export default function DualModeAuditPage({ params }: { params: Promise<{ id: st
                 )}
               </div>
 
-              {findings.length > 0 && (
-                <div className="pt-6 border-t border-gray-200">
-                  <div className="text-sm text-gray-600">
-                    <span className="font-bold text-gray-900">{findings.length}</span> potential dark pattern signals detected during the purchase flow.
-                  </div>
-                </div>
-              )}
+              {/* (Removed redundant findings count as it is now in the top identity label) */}
 
               {/* Captured Page Viewport Snapshot */}
               {(scan?.screenshot_base64 || stages[0]?.screenshot_b64) && (
