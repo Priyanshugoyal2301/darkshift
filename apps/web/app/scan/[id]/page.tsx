@@ -39,34 +39,44 @@ interface PriceComponent {
   is_mandatory: boolean;
   disclosed_early: boolean;
   added_in_stage?: string;
+  first_observed_stage?: string;
+  previously_disclosed?: boolean;
+  is_delivery_dependent?: boolean;
 }
 
 interface PriceStage {
   stage: string;
   stage_label: string;
-  total: number;
+  total?: number | null;
+  is_captured?: boolean;
   components: PriceComponent[];
   url: string;
   screenshot_b64?: string;
+  extraction_source?: string;
+  extraction_confidence?: string;
 }
 
 interface PriceComponentExplanation {
   label: string;
   amount: number;
-  category: string;
-  stage_added: string;
-  reason: string;
+  component_type?: string;
+  category?: string;
+  stage_added?: string;
+  disclosure_stage?: string;
+  assessment_status?: string;
+  reason?: string;
+  assessment_reason?: string;
 }
 
 interface PriceJourney {
   stages: PriceStage[];
-  initial_price: number;
-  cart_price?: number;
-  final_observed_price: number;
-  delta_01?: number;
-  delta_12?: number;
-  delta_total: number;
-  percentage_increase: number;
+  initial_price?: number | null;
+  cart_price?: number | null;
+  final_observed_price?: number | null;
+  delta_01?: number | null;
+  delta_12?: number | null;
+  delta_total?: number | null;
+  percentage_increase?: number | null;
   component_explanations?: PriceComponentExplanation[];
   new_charges: PriceComponent[];
   dark_pattern_assessment?: "DETECTED" | "POTENTIAL_SIGNAL" | "EVALUATED_CLEAN" | "INCONCLUSIVE";
@@ -118,18 +128,6 @@ interface TransparencyScore {
   disclaimer: string;
 }
 
-interface RiskAssessment {
-  risk_level: "UNDETERMINED" | "LOW" | "ELEVATED" | "HIGH";
-  risk_score: number;
-  checks_performed: number;
-  signals_found: number;
-  high_confidence_count: number;
-  medium_confidence_count: number;
-  low_confidence_count: number;
-  coverage_sufficient?: boolean;
-  summary: string;
-}
-
 interface PatternCoverageItem {
   pattern: string;
   pattern_name: string;
@@ -143,6 +141,18 @@ interface ScanCoverage {
   checkout_reached: boolean;
   coverage_score: number;
   items: PatternCoverageItem[];
+}
+
+interface RiskAssessment {
+  risk_level: "LOW" | "ELEVATED" | "HIGH" | "UNDETERMINED";
+  risk_score: number;
+  checks_performed: number;
+  signals_found: number;
+  high_confidence_count: number;
+  medium_confidence_count: number;
+  low_confidence_count: number;
+  summary: string;
+  coverage_sufficient?: boolean;
 }
 
 interface AuditLogEntry {
@@ -226,85 +236,107 @@ export default function DualModeAuditPage({
     return f.severity.toUpperCase() === severityFilter;
   });
 
+  const highFindingsCount = findings.filter(
+    (f) => f.confidence_tier === "HIGH" || f.severity === "high"
+  ).length;
+
   const risk = scan?.risk_assessment || {
     risk_level: "LOW" as const,
     risk_score: 0,
     checks_performed: 14,
     signals_found: findings.length,
-    high_confidence_count: findings.filter((f) => f.confidence_tier === "HIGH" || f.severity === "high").length,
+    high_confidence_count: highFindingsCount,
     medium_confidence_count: findings.filter((f) => f.confidence_tier === "MEDIUM").length,
     low_confidence_count: findings.filter((f) => f.confidence_tier === "LOW").length,
-    summary: findings.length === 0 ? "No deceptive patterns identified on evaluated pages." : `${findings.length} potential dark patterns observed.`,
+    summary:
+      findings.length === 0
+        ? "No deceptive patterns identified on evaluated pages."
+        : `${findings.length} potential dark patterns observed.`,
   };
 
   const coverage = scan?.scan_coverage;
   const journey = scan?.price_journey;
   const stages = journey?.stages || [];
 
-  const getRiskColor = (level: string) => {
-    switch (level) {
-      case "HIGH":
-        return {
-          bg: "bg-rose-950/40",
-          border: "border-rose-800",
-          text: "text-rose-400",
-          badgeBg: "bg-rose-900/60",
-          indicator: "bg-rose-500",
-        };
-      case "ELEVATED":
-        return {
-          bg: "bg-amber-950/40",
-          border: "border-amber-800",
-          text: "text-amber-400",
-          badgeBg: "bg-amber-900/60",
-          indicator: "bg-amber-500",
-        };
-      case "UNDETERMINED":
-        return {
-          bg: "bg-slate-900/70",
-          border: "border-slate-700",
-          text: "text-slate-300",
-          badgeBg: "bg-slate-800",
-          indicator: "bg-slate-400",
-        };
-      case "LOW":
-      default:
-        return {
-          bg: "bg-emerald-950/30",
-          border: "border-emerald-800/80",
-          text: "text-emerald-400",
-          badgeBg: "bg-emerald-900/60",
-          indicator: "bg-emerald-500",
-        };
-    }
-  };
+  const stageP0 = stages.find((s) => s.stage === "product");
+  const stageP1 = stages.find((s) => s.stage === "cart");
+  const stageP2 = stages.find((s) => s.stage === "checkout");
 
-  const riskTheme = getRiskColor(risk.risk_level);
+  const p0 = stageP0?.is_captured ? stageP0.total : journey?.initial_price;
+  const p1 = stageP1?.is_captured ? stageP1.total : journey?.cart_price;
+  const p2 = stageP2?.is_captured ? stageP2.total : journey?.final_observed_price;
+
+  const stagesScanned = coverage?.stages_scanned || stages.map((s) => s.stage);
+
+  // Extract clean hostname for title
+  let hostname = "example.com";
+  try {
+    if (scan?.url) {
+      hostname = new URL(scan.url).hostname;
+    }
+  } catch (e) {}
+
+  const displayName = scan?.target_metadata?.title || hostname;
+
+  // Collect itemized fees from Cart or Checkout
+  const itemizedFees: { label: string; amount: number; stage: string }[] = [];
+  stages.slice(1).forEach((s) => {
+    s.components?.forEach((c) => {
+      itemizedFees.push({
+        label: c.label,
+        amount: c.amount,
+        stage: s.stage,
+      });
+    });
+  });
+
+  // Extract primary potential issue explanation
+  const dripFinding = findings.find((f) => f.pattern === "DRIP_PRICING");
+  const sneakingFinding = findings.find((f) => f.pattern === "BASKET_SNEAKING");
+  let potentialIssueText = "";
+  if (dripFinding) {
+    potentialIssueText = dripFinding.explanation;
+  } else if (sneakingFinding) {
+    potentialIssueText = sneakingFinding.explanation;
+  } else if (journey?.explanation && journey.explanation.includes("withheld")) {
+    potentialIssueText = journey.explanation;
+  } else if (journey?.delta_total && journey.delta_total > 0) {
+    potentialIssueText = `Payable total escalated by +₹${journey.delta_total.toLocaleString()} (${journey.percentage_increase}%) beyond the initial advertised listing price.`;
+  }
 
   return (
-    <div className="min-h-screen bg-[#090d14] text-slate-200 font-sans print:bg-white print:text-black">
+    <div className={`min-h-screen ${activeMode === "consumer" ? "bg-[#F7F8FA] text-[#111827]" : "bg-[#090d14] text-slate-200 font-mono"}`}>
       {/* Top Header */}
-      <header className="border-b border-slate-800/90 bg-[#0d131f] px-6 py-3.5 no-print sticky top-0 z-30 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <Link href="/" className="text-slate-400 hover:text-white text-xs font-mono transition-colors">
-              ← INSPECTION BENCH
+      <header className={`border-b ${activeMode === "consumer" ? "bg-white border-[#E5E7EB]" : "bg-[#0d131f] border-slate-800"} px-6 py-3.5 sticky top-0 z-30`}>
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <Link
+              href="/"
+              className={`text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                activeMode === "consumer" ? "text-[#6B7280] hover:text-[#111827]" : "text-slate-400 hover:text-white"
+              }`}
+            >
+              <span>← Back to scans</span>
             </Link>
-            <span className="text-slate-700">/</span>
-            <span className="text-xs font-mono text-blue-400 font-semibold tracking-wider">
-              REF: {scanId.substring(0, 10).toUpperCase()}
-            </span>
+            <span className={activeMode === "consumer" ? "text-[#E5E7EB]" : "text-slate-700"}>|</span>
+            <div className="flex items-center gap-2">
+              <span className={`font-semibold text-sm ${activeMode === "consumer" ? "text-[#111827]" : "text-white"}`}>
+                DarkShield
+              </span>
+            </div>
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Mode Switcher */}
-            <div className="flex items-center bg-[#070a10] p-1 rounded-md border border-slate-800">
+            {/* Consumer | Auditor Mode Switcher */}
+            <div className={`flex items-center p-1 rounded-md border ${
+              activeMode === "consumer" ? "bg-[#F3F4F6] border-[#E5E7EB]" : "bg-[#070a10] border-slate-800"
+            }`}>
               <button
                 type="button"
                 onClick={() => setActiveMode("consumer")}
-                className={`px-3 py-1 text-xs font-semibold rounded transition-all cursor-pointer ${
+                className={`px-3 py-1 text-xs font-medium rounded transition-all cursor-pointer ${
                   activeMode === "consumer"
-                    ? "bg-blue-600 text-white shadow-sm"
+                    ? "bg-white text-[#111827] shadow-xs font-semibold"
                     : "text-slate-400 hover:text-slate-200"
                 }`}
               >
@@ -313,10 +345,10 @@ export default function DualModeAuditPage({
               <button
                 type="button"
                 onClick={() => setActiveMode("auditor")}
-                className={`px-3 py-1 text-xs font-semibold rounded transition-all cursor-pointer ${
+                className={`px-3 py-1 text-xs font-medium rounded transition-all cursor-pointer ${
                   activeMode === "auditor"
-                    ? "bg-slate-800 text-slate-100 shadow-sm border border-slate-700"
-                    : "text-slate-400 hover:text-slate-200"
+                    ? "bg-slate-800 text-white shadow-xs font-semibold border border-slate-700"
+                    : "text-[#6B7280] hover:text-[#111827]"
                 }`}
               >
                 Auditor View
@@ -325,467 +357,313 @@ export default function DualModeAuditPage({
 
             <button
               onClick={() => window.print()}
-              className="px-3 py-1.5 rounded bg-[#090d16] hover:bg-slate-800 border border-slate-700 text-xs font-mono text-slate-200 transition-colors cursor-pointer hidden md:inline-flex items-center gap-1.5"
+              className={`px-3 py-1.5 rounded text-xs transition-colors cursor-pointer hidden md:inline-flex items-center gap-1.5 border ${
+                activeMode === "consumer"
+                  ? "bg-white hover:bg-[#F9FAFB] border-[#E5E7EB] text-[#4B5563]"
+                  : "bg-[#090d16] hover:bg-slate-800 border-slate-700 text-slate-200 font-mono"
+              }`}
             >
-              <span>EXPORT DOSSIER</span>
+              <span>Export</span>
             </button>
           </div>
         </div>
       </header>
 
       {/* Main Body */}
-      <main className="max-w-7xl mx-auto px-6 py-8 space-y-6">
-        {/* Real-time scan banner if still executing */}
+      <main className="max-w-5xl mx-auto px-6 py-8 space-y-6">
+        {/* Real-time status banner if crawl is active */}
         {scan?.status === "running" && (
-          <div className="p-4 rounded-lg bg-blue-950/40 border border-blue-800 flex items-center justify-between gap-4 animate-pulse">
-            <div className="flex items-center gap-3">
-              <span className="w-2.5 h-2.5 rounded-full bg-blue-400 animate-ping"></span>
-              <span className="text-xs font-mono text-blue-300">
-                Playwright multi-stage crawl in progress (executing safe Add to Cart & Checkout journey)...
+          <div className="p-4 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-between gap-4 text-xs text-blue-800">
+            <div className="flex items-center gap-2.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-ping"></span>
+              <span className="font-medium">
+                Inspecting purchase journey (Product → Cart → Checkout)...
               </span>
             </div>
-            <span className="text-xs font-mono text-slate-400">Inspecting DOM & Prices</span>
+            <span className="text-blue-600 font-medium">In Progress</span>
           </div>
         )}
 
         {/* ═══════════════════════════════════════════════════════════════════ */}
-        {/* MODE 1: CONSUMER VIEW                                             */}
+        {/* MODE 1: CONSUMER VIEW (Clean Light SaaS & Regulatory Inspection)     */}
         {/* ═══════════════════════════════════════════════════════════════════ */}
         {activeMode === "consumer" && (
-          <div className="space-y-6">
-            {/* Website Inspection Hero Card */}
-            <section className="p-6 sm:p-7 rounded-xl bg-[#0e1422] border border-slate-800/90 shadow-xl space-y-5">
-              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-5 pb-5 border-b border-slate-800/80">
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-slate-800/80 border border-slate-700 text-slate-300 font-semibold tracking-wide">
-                      WEBSITE INSPECTION
-                    </span>
-                    <span className="font-mono text-[11px] text-slate-500">
-                      {scan?.pages_analyzed ? `${scan.pages_analyzed} pages crawled` : "Single-page audit"}
-                    </span>
-                  </div>
-
-                  <h1 className="text-2xl font-bold text-white tracking-tight">
-                    {scan?.target_metadata?.title || "Audited Digital Service"}
-                  </h1>
-
-                  <div className="text-xs font-mono text-slate-400 truncate max-w-2xl" title={scan?.url}>
-                    Target: <span className="text-slate-300">{scan?.target_metadata?.final_url || scan?.url}</span>
-                  </div>
-                </div>
-
-                {/* Honest Risk Badge (NOT 94/100 score) */}
-                <div className={`p-4 rounded-lg border ${riskTheme.bg} ${riskTheme.border} flex-shrink-0 text-right min-w-[240px]`}>
-                  <div className="text-[11px] font-mono tracking-wider text-slate-400 uppercase font-semibold">
-                    Potential Dark-Pattern Risk
-                  </div>
-                  <div className="flex items-center justify-end gap-2.5 mt-1">
-                    <span className={`w-2.5 h-2.5 rounded-full ${riskTheme.indicator}`}></span>
-                    <span className={`text-xl font-black tracking-tight ${riskTheme.text}`}>
-                      {risk.risk_level} RISK
-                    </span>
-                  </div>
-                  <div className="text-[11px] font-mono text-slate-400 mt-1.5">
-                    {risk.checks_performed} checks · {risk.signals_found} signals · {risk.high_confidence_count} high-confidence
-                  </div>
-                </div>
-              </div>
-
-              {/* Three Metric Pills */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs font-mono">
-                <div className="p-3 rounded-lg bg-[#090d16] border border-slate-800 flex items-center justify-between">
-                  <span className="text-slate-400">Potential Patterns</span>
-                  <span className="font-bold text-white text-sm">{risk.signals_found}</span>
-                </div>
-                <div className="p-3 rounded-lg bg-[#090d16] border border-slate-800 flex items-center justify-between">
-                  <span className="text-slate-400">Needs Verification</span>
-                  <span className="font-bold text-amber-400 text-sm">{risk.medium_confidence_count}</span>
-                </div>
-                <div className="p-3 rounded-lg bg-[#090d16] border border-slate-800 flex items-center justify-between">
-                  <span className="text-slate-400">High-Confidence Violations</span>
-                  <span className="font-bold text-rose-400 text-sm">{risk.high_confidence_count}</span>
-                </div>
-              </div>
-
-              {/* 4-Question Consumer Hierarchy */}
-              <div className="space-y-4 pt-2">
-                {/* ① IS THERE A PROBLEM? */}
-                <div className={`p-4 rounded-lg border ${riskTheme.bg} ${riskTheme.border} space-y-1.5`}>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs px-2 py-0.5 rounded bg-black/40 border border-slate-700 text-slate-200 font-bold">
-                      ① IS THERE A PROBLEM?
-                    </span>
-                    <span className={`text-xs font-bold font-mono tracking-wide ${riskTheme.text}`}>
-                      {risk.risk_level} RISK
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-200 leading-relaxed">
-                    {risk.risk_level === "UNDETERMINED" && (
-                      "Insufficient journey coverage: DarkShield crawled the accessible product page but checkout review could not be reached. Because late-stage convenience fees or pre-selected add-ons cannot be inspected, this page cannot be verified as safe."
-                    )}
-                    {risk.risk_level === "HIGH" && (
-                      `${risk.high_confidence_count} high-confidence potential dark-pattern signals were verified against India's CCPA 2023 Guidelines. High likelihood of deceptive consumer friction.`
-                    )}
-                    {risk.risk_level === "ELEVATED" && (
-                      `${risk.signals_found} potential dark-pattern signals identified that warrant consumer vigilance.`
-                    )}
-                    {risk.risk_level === "LOW" && (
-                      "Evaluated Clean: No deceptive patterns were identified across the verified stages of the purchase journey."
-                    )}
-                  </p>
-                </div>
-
-                {/* ② WHAT HAPPENED? */}
-                <div className="p-4 rounded-lg bg-[#090d16] border border-slate-800 space-y-2.5">
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <span className="font-mono text-xs px-2 py-0.5 rounded bg-purple-950/80 border border-purple-800 text-purple-300 font-bold">
-                      ② WHAT HAPPENED?
-                    </span>
-                    {journey && journey.delta_total > 0 && (
-                      <span className="text-xs font-mono font-bold text-rose-400">
-                        +₹{journey.delta_total.toLocaleString()} total escalation (+{journey.percentage_increase}%)
-                      </span>
-                    )}
-                  </div>
-                  {journey && stages.length > 0 ? (
-                    <div className="flex flex-col sm:flex-row items-center gap-2 font-mono text-xs">
-                      <div className="p-2.5 rounded bg-[#0e1422] border border-slate-800 flex-1 text-center w-full">
-                        <div className="text-[10px] text-slate-400">Advertised (P0)</div>
-                        <div className="text-base font-bold text-white">₹{journey.initial_price.toLocaleString()}</div>
-                      </div>
-                      <span className="text-slate-500 font-bold">→</span>
-                      <div className="p-2.5 rounded bg-[#0e1422] border border-slate-800 flex-1 text-center w-full">
-                        <div className="text-[10px] text-slate-400">In Cart (P1)</div>
-                        <div className="text-base font-bold text-white">
-                          {journey.cart_price ? `₹${journey.cart_price.toLocaleString()}` : "—"}
-                        </div>
-                        {journey.delta_01 ? (
-                          <div className="text-[10px] text-rose-400 font-semibold">+₹{journey.delta_01.toLocaleString()}</div>
-                        ) : null}
-                      </div>
-                      <span className="text-slate-500 font-bold">→</span>
-                      <div className={`p-2.5 rounded border flex-1 text-center w-full ${journey.delta_total > 0 ? 'bg-rose-950/20 border-rose-800' : 'bg-[#0e1422] border-slate-800'}`}>
-                        <div className="text-[10px] text-slate-400">At Checkout (P2)</div>
-                        <div className="text-base font-bold text-white">₹{journey.final_observed_price.toLocaleString()}</div>
-                        {journey.delta_12 ? (
-                          <div className="text-[10px] text-rose-400 font-semibold">+₹{journey.delta_12.toLocaleString()}</div>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-400 font-mono">
-                      Single page audited; full checkout journey not initiated.
-                    </p>
-                  )}
-                </div>
-
-                {/* ③ WHY DID IT CHANGE? */}
-                <div className="p-4 rounded-lg bg-[#090d16] border border-slate-800 space-y-2.5">
-                  <span className="font-mono text-xs px-2 py-0.5 rounded bg-amber-950/80 border border-amber-800 text-amber-300 font-bold">
-                    ③ WHY DID IT CHANGE?
-                  </span>
-                  {journey?.component_explanations && journey.component_explanations.length > 0 ? (
-                    <div className="space-y-1.5">
-                      {journey.component_explanations.map((exp, eIdx) => (
-                        <div key={eIdx} className="p-2.5 rounded bg-[#0e1422] border border-slate-800 flex items-center justify-between text-xs font-mono">
-                          <div>
-                            <span className="text-white font-bold">{exp.label}</span>
-                            <span className="text-slate-400 ml-2">({exp.reason} · stage: {exp.stage_added})</span>
-                          </div>
-                          <span className="text-rose-400 font-bold">+₹{exp.amount.toLocaleString()}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-300 leading-relaxed font-mono">
-                      {journey?.explanation || "No hidden fees or unexpected line-item additions were detected."}
-                    </p>
-                  )}
-                </div>
-
-                {/* ④ WHAT SHOULD YOU DO? */}
-                <div className="p-4 rounded-lg bg-blue-950/20 border border-blue-900/50 space-y-2">
-                  <span className="font-mono text-xs px-2 py-0.5 rounded bg-blue-900/60 border border-blue-700 text-blue-200 font-bold">
-                    ④ WHAT SHOULD YOU DO?
-                  </span>
-                  <ul className="text-xs text-slate-200 space-y-1 list-disc list-inside">
-                    {risk.risk_level === "UNDETERMINED" && (
-                      <li>Manually inspect the cart and checkout summary before submitting payment details.</li>
-                    )}
-                    {journey && journey.delta_total > 0 && (
-                      <li>Verify the +₹{journey.delta_total.toLocaleString()} price increase before completing checkout.</li>
-                    )}
-                    {findings.some(f => f.pattern === "BASKET_SNEAKING") && (
-                      <li>Uncheck any pre-selected insurance, donation, or warranty options.</li>
-                    )}
-                    {findings.some(f => f.pattern === "FALSE_URGENCY") && (
-                      <li>Ignore artificial countdown clocks or pressure text; take time to evaluate your purchase.</li>
-                    )}
-                    {findings.length === 0 && risk.risk_level === "LOW" && (
-                      <li>Prices and choices appear transparent under CCPA 2023 Guidelines.</li>
-                    )}
-                  </ul>
-                </div>
+          <div className="space-y-6 font-sans">
+            {/* Store / Target Header */}
+            <section className="space-y-1">
+              <h1 className="text-2xl font-bold text-[#111827] tracking-tight">
+                {displayName}
+              </h1>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-[#6B7280]">
+                <span className="font-mono text-[#4B5563]">{hostname}</span>
+                <span>•</span>
+                <span className="flex items-center gap-1.5 text-[#15803D] font-medium">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#15803D]"></span>
+                  Inspection completed
+                </span>
+                <span>•</span>
+                <span>{stagesScanned.length} stages evaluated</span>
               </div>
             </section>
 
-            {/* FLAGSHIP FEATURE: Visual Price Journey */}
+            {/* Main Result Card (Exact Layout from Specification) */}
+            <section className="bg-white border border-[#E5E7EB] rounded-lg p-6 shadow-xs space-y-4">
+              <div className="text-xs font-semibold text-[#6B7280] uppercase tracking-wider">
+                Potential risk
+              </div>
+
+              <div className="flex items-baseline gap-3">
+                <span
+                  className={`text-3xl font-bold tracking-tight ${
+                    risk.risk_level === "HIGH"
+                      ? "text-[#DC2626]"
+                      : risk.risk_level === "ELEVATED"
+                      ? "text-[#B45309]"
+                      : risk.risk_level === "UNDETERMINED"
+                      ? "text-[#6B7280]"
+                      : "text-[#15803D]"
+                  }`}
+                >
+                  {risk.risk_level}
+                </span>
+
+                {risk.risk_level === "UNDETERMINED" && (
+                  <span className="text-xs text-[#6B7280] bg-[#F9FAFB] px-2 py-0.5 rounded border border-[#E5E7EB]">
+                    Inconclusive checkout coverage
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-4 text-sm text-[#4B5563]">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-[#2563EB]"></span>
+                  <span>
+                    {findings.length} potential dark-pattern {findings.length === 1 ? "signal" : "signals"}
+                  </span>
+                </div>
+                <span>•</span>
+                <div className="flex items-center gap-1.5">
+                  <span>
+                    {highFindingsCount} high-confidence {highFindingsCount === 1 ? "finding" : "findings"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Coverage Integrity Checkmarks */}
+              <div className="pt-3 border-t border-[#F3F4F6] flex items-center gap-6 text-xs text-[#374151]">
+                <span className="flex items-center gap-1.5 font-medium">
+                  <span>Product</span>
+                  <span className="text-[#15803D] font-bold">✓</span>
+                </span>
+                <span className="flex items-center gap-1.5 font-medium">
+                  <span>Cart</span>
+                  {stagesScanned.includes("cart") ? (
+                    stageP1?.is_captured !== false ? (
+                      <span className="text-[#15803D] font-bold">✓</span>
+                    ) : (
+                      <span className="text-[#B45309] font-bold" title="Price not captured">?</span>
+                    )
+                  ) : (
+                    <span className="text-[#9CA3AF]">Not reached</span>
+                  )}
+                </span>
+                <span className="flex items-center gap-1.5 font-medium">
+                  <span>Checkout</span>
+                  {stagesScanned.includes("checkout") ? (
+                    stageP2?.is_captured !== false ? (
+                      <span className="text-[#15803D] font-bold">✓</span>
+                    ) : (
+                      <span className="text-[#B45309] font-bold" title="Price not captured">?</span>
+                    )
+                  ) : (
+                    <span className="text-[#9CA3AF]">Not reached</span>
+                  )}
+                </span>
+              </div>
+            </section>
+
+            {/* Price Journey: Financial Comparison Table */}
             {journey && stages.length > 0 && (
-              <section className="p-6 sm:p-7 rounded-xl bg-[#0e1422] border border-slate-800/90 shadow-xl space-y-6">
+              <section className="bg-white border border-[#E5E7EB] rounded-lg p-6 shadow-xs space-y-6">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-purple-950 border border-purple-800 text-purple-300 font-semibold">
-                        FLAGSHIP ANALYSIS
-                      </span>
-                      <h2 className="text-lg font-bold text-white tracking-tight">
-                        Purchase Price Journey
-                      </h2>
-                    </div>
-                    <p className="text-xs text-slate-400 mt-1">
-                      Continuous Playwright simulation from initial product page through cart to final observed checkout total.
+                    <h2 className="text-base font-semibold text-[#111827]">Price journey</h2>
+                    <p className="text-xs text-[#6B7280] mt-0.5">
+                      Observed price changes from advertised product page to final observed checkout total.
                     </p>
                   </div>
 
-                  {journey.delta_total > 0 ? (
-                    <div className="px-3.5 py-1.5 rounded-lg bg-rose-950/60 border border-rose-800 text-rose-300 font-mono text-xs flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
-                      <span>Total Increase: +₹{journey.delta_total.toLocaleString()} (+{journey.percentage_increase}%)</span>
-                    </div>
+                  {journey.delta_total && journey.delta_total > 0 ? (
+                    <span className="text-xs font-semibold px-2.5 py-1 rounded bg-red-50 text-[#DC2626] border border-red-200">
+                      Total increase +₹{journey.delta_total.toLocaleString()} (+{journey.percentage_increase}%)
+                    </span>
                   ) : (
-                    <div className="px-3.5 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-800 text-emerald-400 font-mono text-xs">
-                      ✓ No Price Escalation Observed
-                    </div>
-                  )}
-                </div>
-
-                {/* Step Progression Diagram */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 relative">
-                  {stages.map((stage, idx) => {
-                    const isInitial = idx === 0;
-                    const isFinal = idx === stages.length - 1;
-                    const prevPrice = idx > 0 ? stages[idx - 1].total : stage.total;
-                    const deltaFromPrev = stage.total - prevPrice;
-
-                    return (
-                      <div
-                        key={stage.stage}
-                        className={`p-5 rounded-lg border transition-all ${
-                          isFinal && journey.delta_total > 0
-                            ? "bg-rose-950/20 border-rose-800/80"
-                            : isInitial
-                            ? "bg-[#090d16] border-slate-700"
-                            : "bg-[#090d16] border-slate-800"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-[11px] font-mono uppercase font-bold text-slate-400">
-                            {stage.stage_label}
-                          </span>
-                          {deltaFromPrev > 0 && (
-                            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-rose-900/60 text-rose-300 font-bold">
-                              +₹{deltaFromPrev.toLocaleString()}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="text-2xl font-black font-mono text-white mt-1">
-                          ₹{stage.total.toLocaleString()}
-                        </div>
-
-                        <div className="text-[11px] text-slate-400 mt-2 truncate" title={stage.url}>
-                          {isInitial && "Advertised Product Price"}
-                          {!isInitial && !isFinal && "Cart Review with Add-ons"}
-                          {isFinal && (journey.checkout_reached ? "Final Observed Payable Total" : "Last Reached State")}
-                        </div>
-
-                        {stage.components && stage.components.length > 0 && (
-                          <div className="mt-3 pt-3 border-t border-slate-800/80 space-y-1">
-                            {stage.components.map((c, cIdx) => (
-                              <div key={cIdx} className="flex items-center justify-between text-[11px] font-mono text-slate-400">
-                                <span>{c.label}</span>
-                                <span className={c.is_mandatory ? "text-rose-400" : "text-amber-400"}>
-                                  +₹{c.amount.toLocaleString()}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* Journey Narrative */}
-                <div className="p-4 rounded-lg bg-[#090d16] border border-slate-800 text-xs font-mono text-slate-300 leading-relaxed">
-                  <span className="text-blue-400 font-bold">DARKSHIELD ANALYSIS: </span>
-                  {journey.explanation || "All mandatory charges remained stable across evaluated purchase states."}
-                  {!journey.checkout_reached && (
-                    <span className="text-amber-400 block mt-1">
-                      Note: Crawler completed product & cart verification; final checkout state was not reached on this target.
+                    <span className="text-xs font-semibold px-2.5 py-1 rounded bg-green-50 text-[#15803D] border border-green-200">
+                      Stable transparent price
                     </span>
                   )}
                 </div>
+
+                {/* Financial Comparison Columns: Advertised | Cart | Checkout */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Advertised */}
+                  <div className="p-4 rounded-md bg-[#F9FAFB] border border-[#E5E7EB] space-y-1">
+                    <div className="text-xs text-[#6B7280] font-medium">Advertised</div>
+                    <div className="text-2xl font-bold text-[#111827]">
+                      {p0 !== null && p0 !== undefined ? `₹${p0.toLocaleString()}` : "Not captured"}
+                    </div>
+                    <div className="text-[11px] text-[#9CA3AF]">Initial listing price</div>
+                  </div>
+
+                  {/* Cart */}
+                  <div className="p-4 rounded-md bg-[#F9FAFB] border border-[#E5E7EB] space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-[#6B7280] font-medium">Cart</span>
+                      {journey?.delta_01 && journey.delta_01 > 0 && (
+                        <span className="text-[11px] font-semibold text-[#DC2626]">
+                          +₹{journey.delta_01.toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-2xl font-bold text-[#111827]">
+                      {p1 !== null && p1 !== undefined
+                        ? `₹${p1.toLocaleString()}`
+                        : stagesScanned.includes("cart")
+                        ? "Not captured"
+                        : "Not reached"}
+                    </div>
+                    <div className="text-[11px] text-[#9CA3AF]">Basket review stage</div>
+                  </div>
+
+                  {/* Checkout */}
+                  <div className="p-4 rounded-md bg-[#F9FAFB] border border-[#E5E7EB] space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-[#6B7280] font-medium">Checkout</span>
+                      {journey?.delta_12 && journey.delta_12 > 0 && (
+                        <span className="text-[11px] font-semibold text-[#DC2626]">
+                          +₹{journey.delta_12.toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-2xl font-bold text-[#111827]">
+                      {p2 !== null && p2 !== undefined
+                        ? `₹${p2.toLocaleString()}`
+                        : stagesScanned.includes("checkout")
+                        ? "Not captured"
+                        : "Not reached"}
+                    </div>
+                    <div className="text-[11px] text-[#9CA3AF]">Final observed payable total</div>
+                  </div>
+                </div>
+
+                {/* What changed? Table */}
+                {itemizedFees.length > 0 && (
+                  <div className="space-y-3 pt-2">
+                    <div className="text-sm font-semibold text-[#111827]">What changed?</div>
+                    <div className="border border-[#E5E7EB] rounded-md overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-[#F9FAFB] text-[#6B7280] border-b border-[#E5E7EB] font-medium">
+                          <tr>
+                            <th className="py-2.5 px-4">Charge</th>
+                            <th className="py-2.5 px-4">Amount</th>
+                            <th className="py-2.5 px-4">Added</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#E5E7EB] text-[#111827]">
+                          {itemizedFees.map((fee, idx) => (
+                            <tr key={idx} className="hover:bg-[#F9FAFB]/50">
+                              <td className="py-2.5 px-4 font-medium">{fee.label}</td>
+                              <td className="py-2.5 px-4">₹{fee.amount.toLocaleString()}</td>
+                              <td className="py-2.5 px-4 text-[#6B7280] capitalize">{fee.stage}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Potential Issue Callout */}
+                {potentialIssueText && (
+                  <div className="p-3.5 rounded-md bg-amber-50 border border-amber-200 text-xs text-[#B45309] space-y-1">
+                    <div className="font-semibold text-amber-950">Potential issue</div>
+                    <div className="text-amber-900 leading-relaxed">{potentialIssueText}</div>
+                  </div>
+                )}
               </section>
             )}
 
-            {/* Findings Ledger for Consumers */}
+            {/* Findings List */}
             <section className="space-y-4">
               <div className="flex items-center justify-between">
-                <h2 className="text-lg font-bold text-white tracking-tight">
-                  Identified Dark Patterns & Advisory ({findings.length})
+                <h2 className="text-base font-semibold text-[#111827]">
+                  Observed findings ({findings.length})
                 </h2>
-                <div className="text-xs font-mono text-slate-400">
-                  Plain-language consumer protections
-                </div>
+                <span className="text-xs text-[#6B7280]">
+                  Automated consumer protection analysis
+                </span>
               </div>
 
               {findings.length === 0 ? (
-                <div className="p-8 rounded-xl bg-[#0e1422] border border-slate-800 text-center space-y-2">
-                  <div className="text-emerald-400 font-mono text-sm font-bold">
-                    ✓ NO HIGH-CONFIDENCE DECEPTIVE SIGNALS IDENTIFIED
+                <div className="bg-white border border-[#E5E7EB] rounded-lg p-8 text-center space-y-2">
+                  <div className="text-[#15803D] font-semibold text-sm">
+                    ✓ No deceptive patterns observed
                   </div>
-                  <p className="text-xs text-slate-400 max-w-lg mx-auto">
-                    DarkShield evaluated the accessible stages of this target against CCPA 2023 Guidelines and found no manipulative patterns.
+                  <p className="text-xs text-[#6B7280] max-w-md mx-auto">
+                    DarkShield observed the accessible purchase journey stages and found no deceptive price escalation or manipulative choice architecture.
                   </p>
                 </div>
               ) : (
-                <div className="space-y-3.5">
-                  {findings.map((f) => {
-                    const isHigh = f.severity === "high" || f.confidence_tier === "HIGH";
-                    return (
-                      <div
-                        key={f.id}
-                        className={`p-5 rounded-xl border transition-all ${
-                          isHigh
-                            ? "bg-[#10141f] border-rose-900/60 shadow-lg"
-                            : "bg-[#0e1422] border-slate-800"
-                        }`}
-                      >
-                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 pb-3 border-b border-slate-800/80">
-                          <div>
-                            <div className="flex items-center gap-2 mb-1">
-                              <span
-                                className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
-                                  isHigh
-                                    ? "bg-rose-950 border border-rose-800 text-rose-300"
-                                    : "bg-amber-950 border border-amber-800 text-amber-300"
-                                }`}
-                              >
-                                {f.confidence_tier ? `${f.confidence_tier} CONFIDENCE` : `${Math.round(f.confidence * 100)}% CONFIDENCE`}
-                              </span>
-                              <span className="text-[10px] font-mono text-slate-500">
-                                {f.ccpa_regulation}
-                              </span>
-                            </div>
-                            <h3 className="text-base font-bold text-white tracking-tight">
-                              {f.title}
-                            </h3>
+                <div className="space-y-3">
+                  {findings.map((f) => (
+                    <div
+                      key={f.id}
+                      className="bg-white border border-[#E5E7EB] rounded-lg p-5 space-y-3 shadow-xs"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
+                                f.confidence_tier === "HIGH" || f.severity === "high"
+                                  ? "bg-red-50 text-[#DC2626] border border-red-200"
+                                  : "bg-amber-50 text-[#B45309] border border-amber-200"
+                              }`}
+                            >
+                              {f.confidence_tier === "HIGH" ? "High-confidence finding" : "Potential signal"}
+                            </span>
+                            <span className="text-xs text-[#9CA3AF] font-mono">{f.ccpa_regulation}</span>
                           </div>
-
-                          <span className="text-xs font-mono text-slate-400 uppercase">
-                            Pattern: <span className="text-slate-200">{f.pattern.replace(/_/g, " ")}</span>
-                          </span>
+                          <h3 className="font-semibold text-sm text-[#111827]">{f.title}</h3>
                         </div>
 
-                        {/* Explanation & Advice */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3.5 text-xs">
-                          <div className="space-y-1">
-                            <span className="font-mono text-slate-500 text-[11px] uppercase font-bold">
-                              What happened:
-                            </span>
-                            <p className="text-slate-300 leading-relaxed">{f.explanation}</p>
-                          </div>
-
-                          <div className="p-3 rounded-lg bg-blue-950/20 border border-blue-900/40 space-y-1">
-                            <span className="font-mono text-blue-400 text-[11px] uppercase font-bold">
-                              Consumer Action Advice:
-                            </span>
-                            <p className="text-slate-300 leading-relaxed">{f.consumer_advice}</p>
-                          </div>
-                        </div>
-
-                        {/* Evidence Quote */}
-                        {f.text_snippets && f.text_snippets.length > 0 && (
-                          <div className="mt-3.5 pt-3 border-t border-slate-800/70">
-                            <span className="text-[11px] font-mono text-slate-500 uppercase font-semibold">
-                              Observed Evidence:
-                            </span>
-                            <div className="mt-1 flex flex-wrap gap-1.5">
-                              {f.text_snippets.map((snip, sIdx) => (
-                                <span
-                                  key={sIdx}
-                                  className="px-2.5 py-1 rounded bg-[#070a10] border border-slate-800 text-slate-300 font-mono text-[11px]"
-                                >
-                                  "{snip}"
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                        <span className="text-xs text-[#6B7280] capitalize bg-[#F9FAFB] px-2.5 py-1 rounded border border-[#E5E7EB] self-start">
+                          {f.pattern.replace(/_/g, " ").toLowerCase()}
+                        </span>
                       </div>
-                    );
-                  })}
+
+                      <p className="text-xs text-[#4B5563] leading-relaxed">{f.explanation}</p>
+
+                      {f.consumer_advice && (
+                        <div className="bg-[#F9FAFB] border border-[#E5E7EB] rounded p-3 text-xs text-[#374151] space-y-0.5">
+                          <span className="font-semibold text-[#111827]">What to do: </span>
+                          <span>{f.consumer_advice}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
-            </section>
-
-            {/* Scan Coverage Matrix */}
-            <section className="p-6 rounded-xl bg-[#0e1422] border border-slate-800/90 space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div>
-                  <h2 className="text-base font-bold text-white tracking-tight">
-                    Scan Coverage & Evaluation Integrity
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    DarkShield distinguishes between patterns verified clean vs. patterns that were inconclusive because checkout was not reached.
-                  </p>
-                </div>
-                <div className="text-xs font-mono px-2.5 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300">
-                  {coverage?.coverage_score || 70}% Coverage
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 text-xs font-mono">
-                {coverage?.items?.map((item) => {
-                  const isDet = item.status === "DETECTED";
-                  const isClean = item.status === "EVALUATED_CLEAN";
-                  return (
-                    <div
-                      key={item.pattern}
-                      className={`p-3 rounded-lg border flex flex-col justify-between gap-1.5 ${
-                        isDet
-                          ? "bg-rose-950/20 border-rose-900/50 text-rose-300"
-                          : isClean
-                          ? "bg-[#090d16] border-slate-800/80 text-slate-300"
-                          : "bg-[#070a10] border-slate-800/40 text-slate-500"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold">{item.pattern_name}</span>
-                        <span className="text-[10px] text-slate-500">{item.ccpa_section}</span>
-                      </div>
-
-                      <div className="text-[11px] leading-tight">
-                        {isDet && "⚠ Violation signal observed"}
-                        {isClean && "✓ No deceptive signal detected"}
-                        {!isDet && !isClean && "○ Inconclusive — checkout not reached"}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
             </section>
           </div>
         )}
 
         {/* ═══════════════════════════════════════════════════════════════════ */}
-        {/* MODE 2: AUDITOR VIEW                                              */}
+        {/* MODE 2: AUDITOR VIEW (Technical Evidentiary Inspection Console)     */}
         {/* ═══════════════════════════════════════════════════════════════════ */}
         {activeMode === "auditor" && (
-          <div className="space-y-6">
-            {/* Technical Target Metadata Bar */}
+          <div className="space-y-6 font-mono text-xs">
+            {/* Technical Metadata Bar */}
             <section className="p-4 rounded-lg bg-[#0e1422] border border-slate-800 flex flex-wrap items-center justify-between gap-4 text-xs font-mono">
               <div className="flex items-center gap-4 flex-wrap">
                 <div>
@@ -797,12 +675,12 @@ export default function DualModeAuditPage({
                   <span className="text-white">{scan?.target_metadata?.latency_ms || 320} ms</span>
                 </div>
                 <div>
-                  <span className="text-slate-500">DOM ELEMENTS: </span>
+                  <span className="text-slate-500">DOM NODES: </span>
                   <span className="text-white">{scan?.target_metadata?.dom_elements_count || 142}</span>
                 </div>
                 <div>
-                  <span className="text-slate-500">CRAWL ENGINE: </span>
-                  <span className="text-blue-400">Playwright Chromium Headless</span>
+                  <span className="text-slate-500">ENGINE: </span>
+                  <span className="text-blue-400">Playwright Chromium</span>
                 </div>
               </div>
 
@@ -855,7 +733,7 @@ export default function DualModeAuditPage({
                     : "border-transparent text-slate-400 hover:text-slate-200"
                 }`}
               >
-                Viewport Snapshots
+                Viewport Snapshots ({stages.length})
               </button>
               <button
                 type="button"
@@ -866,7 +744,7 @@ export default function DualModeAuditPage({
                     : "border-transparent text-slate-400 hover:text-slate-200"
                 }`}
               >
-                Playwright Execution Trace
+                Playwright Action Trace
               </button>
               <button
                 type="button"
@@ -877,185 +755,212 @@ export default function DualModeAuditPage({
                     : "border-transparent text-slate-400 hover:text-slate-200"
                 }`}
               >
-                Statutory CCPA Citations
-              </button>
-              <button
-                type="button"
-                onClick={() => setAuditorTab("scorecard")}
-                className={`px-4 py-2.5 border-b-2 font-semibold transition-colors cursor-pointer whitespace-nowrap ${
-                  auditorTab === "scorecard"
-                    ? "border-blue-500 text-white bg-slate-900/40"
-                    : "border-transparent text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                Transparency Scorecard
+                CCPA Citations
               </button>
             </div>
 
-            {/* TAB: FINDINGS LEDGER */}
+            {/* TAB 1: Findings Ledger */}
             {auditorTab === "findings" && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
+                  <div className="text-slate-400">
+                    Showing {filteredFindings.length} findings with full evidentiary attributes
+                  </div>
                   <div className="flex items-center gap-2">
-                    {["ALL", "HIGH", "MEDIUM", "LOW"].map((sev) => (
+                    {["ALL", "HIGH", "MEDIUM", "LOW"].map((s) => (
                       <button
-                        key={sev}
-                        onClick={() => setSeverityFilter(sev)}
-                        className={`px-2.5 py-1 rounded text-xs font-mono transition-colors cursor-pointer ${
-                          severityFilter === sev
-                            ? "bg-blue-600 text-white font-bold"
-                            : "bg-[#0e1422] text-slate-400 hover:text-white border border-slate-800"
+                        key={s}
+                        type="button"
+                        onClick={() => setSeverityFilter(s)}
+                        className={`px-2 py-0.5 rounded border transition-colors cursor-pointer ${
+                          severityFilter === s
+                            ? "bg-blue-900/50 border-blue-600 text-blue-300 font-bold"
+                            : "bg-[#090d16] border-slate-800 text-slate-400 hover:text-slate-200"
                         }`}
                       >
-                        {sev}
+                        {s}
                       </button>
                     ))}
                   </div>
-                  <span className="text-xs font-mono text-slate-400">
-                    Showing {filteredFindings.length} of {findings.length} findings
-                  </span>
                 </div>
 
                 <div className="space-y-3">
                   {filteredFindings.map((f) => (
-                    <div key={f.id} className="p-5 rounded-lg bg-[#0e1422] border border-slate-800 space-y-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs text-rose-400 font-bold">[{f.id}]</span>
-                          <span className="font-bold text-white text-sm">{f.title}</span>
+                    <div key={f.id} className="p-4 rounded-lg bg-[#0e1422] border border-slate-800 space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-slate-800/80 pb-2.5">
+                        <div>
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-950 border border-blue-800 text-blue-300 font-bold">
+                              RULE: {f.rule_ids?.[0] || f.pattern}
+                            </span>
+                            <span className="text-[10px] text-slate-400">{f.ccpa_regulation}</span>
+                          </div>
+                          <div className="text-sm font-bold text-white">{f.title}</div>
                         </div>
-                        <span className="font-mono text-xs text-slate-400">{f.ccpa_regulation}</span>
+
+                        <div className="text-right">
+                          <div className="text-slate-400">CONFIDENCE: {Math.round(f.confidence * 100)}%</div>
+                          <div className="text-slate-500 text-[10px]">TIER: {f.confidence_tier || "MEDIUM"}</div>
+                        </div>
                       </div>
 
-                      <p className="text-xs text-slate-300">{f.explanation}</p>
-
-                      <div className="p-3 rounded bg-[#090d16] border border-slate-800 text-xs font-mono space-y-1">
-                        <div className="text-slate-500 text-[11px]">TECHNICAL EVIDENCE:</div>
-                        {f.dom_evidence && f.dom_evidence.length > 0 ? (
-                          f.dom_evidence.map((dom, dIdx) => (
-                            <div key={dIdx} className="text-slate-300">
-                              Selector: <code className="text-blue-400">{dom.selector}</code> | Tag: <code className="text-purple-400">&lt;{dom.tag}&gt;</code> | Text: "{dom.text_content.substring(0, 80)}"
-                            </div>
-                          ))
-                        ) : (
-                          <div className="text-slate-400">Detection methods: {f.detection_methods?.join(", ") || "DOM & Text Pattern Match"}</div>
-                        )}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
+                        <div>
+                          <span className="text-slate-500 font-bold">TECHNICAL EXPLANATION:</span>
+                          <p className="text-slate-300 mt-0.5">{f.explanation}</p>
+                        </div>
+                        <div>
+                          <span className="text-slate-500 font-bold">REMEDIATION SPECIFICATION:</span>
+                          <p className="text-slate-300 mt-0.5">{f.remediation_hint || f.consumer_advice}</p>
+                        </div>
                       </div>
+
+                      {f.dom_evidence && f.dom_evidence.length > 0 && (
+                        <div className="pt-2 border-t border-slate-800/70 text-[10px]">
+                          <span className="text-slate-500 font-bold">DOM SELECTOR:</span>
+                          <pre className="mt-1 p-2 rounded bg-[#05070d] border border-slate-800/80 text-blue-300 overflow-x-auto">
+                            {f.dom_evidence[0].selector}
+                          </pre>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* TAB: PRICE JOURNEY */}
+            {/* TAB 2: Price Journey & Deltas */}
             {auditorTab === "journey" && (
-              <div className="p-6 rounded-lg bg-[#0e1422] border border-slate-800 space-y-4">
-                <h3 className="text-sm font-bold font-mono text-white uppercase">
-                  Multi-Stage Price Progression Audit Log
-                </h3>
-
+              <div className="p-5 rounded-lg bg-[#0e1422] border border-slate-800 space-y-4">
+                <div className="text-sm font-bold text-white">PRICE RECONCILIATION LEDGER</div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-xs font-mono text-left">
+                  <table className="w-full text-left text-[11px] border border-slate-800">
                     <thead className="bg-[#090d16] text-slate-400 border-b border-slate-800">
                       <tr>
-                        <th className="p-3">Stage</th>
-                        <th className="p-3">Recorded Total</th>
-                        <th className="p-3">Step Delta</th>
-                        <th className="p-3">Itemized Additions</th>
-                        <th className="p-3">Target URL</th>
+                        <th className="p-2.5">STAGE</th>
+                        <th className="p-2.5">EXTRACTED AMOUNT</th>
+                        <th className="p-2.5">SOURCE</th>
+                        <th className="p-2.5">CONFIDENCE</th>
+                        <th className="p-2.5">DELTA FROM P0</th>
+                        <th className="p-2.5">STATUS</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-800/80">
-                      {stages.map((st, i) => {
-                        const prev = i > 0 ? stages[i - 1].total : st.total;
-                        const delta = st.total - prev;
-                        return (
-                          <tr key={i} className="hover:bg-slate-900/40">
-                            <td className="p-3 font-bold text-white">{st.stage_label}</td>
-                            <td className="p-3 font-bold text-slate-200">₹{st.total.toLocaleString()}</td>
-                            <td className="p-3 text-rose-400">{delta > 0 ? `+₹${delta.toLocaleString()}` : "₹0"}</td>
-                            <td className="p-3 text-slate-400">
-                              {st.components?.map((c) => c.label).join(", ") || "None"}
-                            </td>
-                            <td className="p-3 text-slate-500 truncate max-w-xs">{st.url}</td>
-                          </tr>
-                        );
-                      })}
+                    <tbody className="divide-y divide-slate-800/80 text-slate-200">
+                      {stages.map((s, idx) => (
+                        <tr key={s.stage}>
+                          <td className="p-2.5 font-bold">{s.stage_label}</td>
+                          <td className="p-2.5">
+                            {s.total !== null && s.total !== undefined ? `₹${s.total.toLocaleString()}` : "NULL (Uncaptured)"}
+                          </td>
+                          <td className="p-2.5 text-blue-400">{s.extraction_source || "SEMANTIC_DOM"}</td>
+                          <td className="p-2.5">{s.extraction_confidence || "HIGH"}</td>
+                          <td className="p-2.5">
+                            {idx === 0
+                              ? "BASELINE"
+                              : s.total && p0
+                              ? `+₹${(s.total - p0).toLocaleString()}`
+                              : "N/A"}
+                          </td>
+                          <td className="p-2.5">
+                            <span className={`px-2 py-0.5 rounded text-[10px] ${
+                              s.is_captured !== false ? "bg-emerald-950 text-emerald-300 border border-emerald-800" : "bg-amber-950 text-amber-300 border border-amber-800"
+                            }`}>
+                              {s.is_captured !== false ? "CAPTURED" : "NOT_CAPTURED"}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
+
+                <div className="text-slate-400 text-[11px] leading-relaxed pt-2">
+                  <span className="text-blue-400 font-bold">DRIP PRICING CALCULATION: </span>
+                  {journey?.is_drip_pricing
+                    ? `CONFIRMED: Mandatory charges withheld from initial stage P0 (₹${p0?.toLocaleString() || 0}) and escalated to P2 (₹${p2?.toLocaleString() || 0}) without prior disclosure.`
+                    : "EVALUATED_CLEAN: No undisclosed mandatory fee escalation observed."}
+                </div>
               </div>
             )}
 
-            {/* TAB: DOM & GEOMETRY EVIDENCE */}
+            {/* TAB 3: DOM & Geometry Evidence */}
             {auditorTab === "evidence" && (
-              <div className="p-6 rounded-lg bg-[#0e1422] border border-slate-800 space-y-4">
-                <h3 className="text-sm font-bold font-mono text-white uppercase">
-                  DOM Selectors & Visual Prominence Scores
-                </h3>
-                <div className="space-y-3">
-                  {findings.flatMap((f) => f.dom_evidence || []).map((dom, i) => (
-                    <div key={i} className="p-3 rounded bg-[#090d16] border border-slate-800 font-mono text-xs space-y-1">
-                      <div className="text-blue-400 font-bold">{dom.selector}</div>
-                      <div className="text-slate-400">Content: "{dom.text_content}"</div>
-                      <div className="text-slate-500 text-[11px]">Tag: {dom.tag}</div>
+              <div className="space-y-3">
+                {findings.map((f) => (
+                  <div key={f.id} className="p-4 rounded-lg bg-[#0e1422] border border-slate-800 space-y-2">
+                    <div className="flex items-center justify-between text-xs text-slate-300 font-bold">
+                      <span>{f.pattern}</span>
+                      <span className="text-blue-400">{f.ccpa_regulation}</span>
                     </div>
+
+                    {f.dom_evidence && f.dom_evidence.length > 0 ? (
+                      <div className="space-y-2">
+                        {f.dom_evidence.map((dom, dIdx) => (
+                          <div key={dIdx} className="p-3 rounded bg-[#070a10] border border-slate-800 space-y-1">
+                            <div className="text-slate-400">SELECTOR: <span className="text-blue-300">{dom.selector}</span></div>
+                            <div className="text-slate-400">TAG: <span className="text-white">{dom.tag}</span></div>
+                            <div className="text-slate-400">TEXT CONTENT: <span className="text-white">"{dom.text_content}"</span></div>
+                            {dom.bounding_box && (
+                              <div className="text-slate-500 text-[10px]">
+                                BOUNDS: x={dom.bounding_box.x}, y={dom.bounding_box.y}, w={dom.bounding_box.width}, h={dom.bounding_box.height}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-slate-500">No raw DOM node bounding box recorded.</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* TAB 4: Viewport Snapshots */}
+            {auditorTab === "screenshots" && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  {stages.map((st, idx) => (
+                    <button
+                      key={st.stage}
+                      type="button"
+                      onClick={() => setSelectedStageIndex(idx)}
+                      className={`px-3 py-1.5 rounded border transition-colors cursor-pointer ${
+                        selectedStageIndex === idx
+                          ? "bg-blue-900/50 border-blue-600 text-blue-300 font-bold"
+                          : "bg-[#0e1422] border-slate-800 text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      {st.stage_label}
+                    </button>
                   ))}
                 </div>
-              </div>
-            )}
 
-            {/* TAB: VIEWPORT SNAPSHOTS */}
-            {auditorTab === "screenshots" && (
-              <div className="p-6 rounded-lg bg-[#0e1422] border border-slate-800 space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold font-mono text-white uppercase">
-                    Playwright Viewport Capture
-                  </h3>
-                  <div className="flex items-center gap-2">
-                    {stages.map((s, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => setSelectedStageIndex(idx)}
-                        className={`px-3 py-1 rounded text-xs font-mono transition-colors ${
-                          selectedStageIndex === idx
-                            ? "bg-blue-600 text-white font-bold"
-                            : "bg-[#090d16] border border-slate-700 text-slate-400"
-                        }`}
-                      >
-                        {s.stage_label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {stages[selectedStageIndex]?.screenshot_b64 || scan?.screenshot_base64 ? (
-                  <div className="border border-slate-700 rounded overflow-hidden">
+                {stages[selectedStageIndex]?.screenshot_b64 ? (
+                  <div className="rounded-lg overflow-hidden border border-slate-800 bg-[#070a10] p-2">
                     <img
-                      src={stages[selectedStageIndex]?.screenshot_b64 || scan?.screenshot_base64}
-                      alt="Viewport snapshot"
-                      className="w-full object-contain max-h-[600px] bg-slate-950"
+                      src={stages[selectedStageIndex].screenshot_b64}
+                      alt={stages[selectedStageIndex].stage_label}
+                      className="w-full h-auto rounded border border-slate-800/80"
                     />
                   </div>
                 ) : (
-                  <div className="p-8 text-center text-xs font-mono text-slate-500">
-                    No visual snapshot captured for this execution.
+                  <div className="p-8 rounded-lg bg-[#0e1422] border border-slate-800 text-center text-slate-500">
+                    No viewport screenshot captured for {stages[selectedStageIndex]?.stage_label || "selected stage"}.
                   </div>
                 )}
               </div>
             )}
 
-            {/* TAB: LOGS */}
+            {/* TAB 5: Playwright Action Trace Logs */}
             {auditorTab === "logs" && (
-              <div className="p-6 rounded-lg bg-[#0e1422] border border-slate-800 space-y-4">
-                <h3 className="text-sm font-bold font-mono text-white uppercase">
-                  Playwright Crawler Terminal Audit Trace
-                </h3>
-                <div className="bg-[#05080e] p-4 rounded border border-slate-800/80 font-mono text-[11px] space-y-1.5 max-h-[500px] overflow-y-auto">
-                  {scan?.audit_logs?.map((l, i) => (
-                    <div key={i} className="flex items-start gap-3 text-slate-300">
-                      <span className="text-slate-600 select-none">{l.timestamp}</span>
-                      <span className="text-blue-400 font-semibold w-32 flex-shrink-0">[{l.stage}]</span>
+              <div className="p-4 rounded-lg bg-[#0e1422] border border-slate-800 space-y-2">
+                <div className="text-sm font-bold text-white mb-2">PLAYWRIGHT ENGINE EXECUTION TRACE</div>
+                <div className="space-y-1 max-h-[500px] overflow-y-auto">
+                  {scan?.audit_logs?.map((l, idx) => (
+                    <div key={idx} className="flex items-start gap-3 py-1 border-b border-slate-800/40 text-[11px]">
+                      <span className="text-slate-500 flex-shrink-0">{l.timestamp}</span>
+                      <span className="text-blue-400 font-bold flex-shrink-0">[{l.stage}]</span>
                       <span className="text-slate-300">{l.message}</span>
                     </div>
                   ))}
@@ -1063,58 +968,27 @@ export default function DualModeAuditPage({
               </div>
             )}
 
-            {/* TAB: STATUTORY CCPA */}
+            {/* TAB 6: CCPA Statutory Citations */}
             {auditorTab === "statutory" && (
-              <div className="p-6 rounded-lg bg-[#0e1422] border border-slate-800 space-y-4 text-xs font-mono leading-relaxed">
-                <h3 className="text-sm font-bold text-white uppercase tracking-wide">
-                  Statutory Regulatory Framework & Section Cross-References
-                </h3>
-                <p className="text-slate-400">
-                  Audits executed by DarkShield reference the Guidelines for Prevention and Regulation of Dark Patterns, 2023, promulgated by the Central Consumer Protection Authority (CCPA) under Section 18 of the Consumer Protection Act, 2019.
-                </p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
-                  <div className="p-3.5 rounded bg-[#090d16] border border-slate-800 space-y-1">
-                    <span className="text-rose-400 font-bold">CCPA 2023 § 5(7) — Drip Pricing</span>
-                    <p className="text-slate-400 text-[11px]">
-                      Concealing final price or mandatory charges until after transaction progression is initiated.
-                    </p>
-                  </div>
-                  <div className="p-3.5 rounded bg-[#090d16] border border-slate-800 space-y-1">
-                    <span className="text-amber-400 font-bold">CCPA 2023 § 5(2) — Basket Sneaking</span>
-                    <p className="text-slate-400 text-[11px]">
-                      Inclusion of additional items, service charges, or charity donations without explicit opt-in consent.
-                    </p>
-                  </div>
-                  <div className="p-3.5 rounded bg-[#090d16] border border-slate-800 space-y-1">
-                    <span className="text-purple-400 font-bold">CCPA 2023 § 5(1) — False Urgency</span>
-                    <p className="text-slate-400 text-[11px]">
-                      Falsely stating or implying scarcity or popularity to compel immediate purchase decisions.
-                    </p>
-                  </div>
-                  <div className="p-3.5 rounded bg-[#090d16] border border-slate-800 space-y-1">
-                    <span className="text-cyan-400 font-bold">CCPA 2023 § 5(6) — Interface Interference</span>
-                    <p className="text-slate-400 text-[11px]">
-                      Manipulating UI elements to visually obscure options or mislead consumers toward preferred seller outcomes.
-                    </p>
-                  </div>
+              <div className="space-y-3">
+                <div className="p-4 rounded-lg bg-[#0e1422] border border-slate-800 space-y-2">
+                  <div className="font-bold text-white">STATUTORY MAPPING UNDER CCPA 2023 GUIDELINES</div>
+                  <p className="text-slate-400 leading-relaxed">
+                    Guidelines for Prevention and Regulation of Dark Patterns, 2023 issued by the Central Consumer Protection Authority (CCPA) under Section 18 of the Consumer Protection Act, 2019.
+                  </p>
                 </div>
-              </div>
-            )}
 
-            {/* TAB: SCORECARD */}
-            {auditorTab === "scorecard" && (
-              <div className="p-6 rounded-lg bg-[#0e1422] border border-slate-800 space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold font-mono text-white uppercase">
-                    Transparency Scorecard (Secondary Proprietary Metric)
-                  </h3>
-                  <div className="text-lg font-black font-mono text-blue-400">
-                    {scan?.transparency_score?.total ?? 100} / 100
-                  </div>
+                <div className="space-y-2">
+                  {findings.map((f) => (
+                    <div key={f.id} className="p-3.5 rounded-lg bg-[#070a10] border border-slate-800 space-y-1">
+                      <div className="flex items-center justify-between text-blue-400 font-bold">
+                        <span>{f.pattern}</span>
+                        <span>{f.ccpa_regulation}</span>
+                      </div>
+                      <p className="text-slate-300 text-[11px] leading-relaxed">{f.explanation}</p>
+                    </div>
+                  ))}
                 </div>
-                <p className="text-xs text-slate-400">
-                  {scan?.transparency_score?.disclaimer || "Proprietary 5-dimension index, not an official compliance certification."}
-                </p>
               </div>
             )}
           </div>
