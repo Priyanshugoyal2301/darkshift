@@ -182,9 +182,30 @@ class TestNoFakeFallbacksInJourney:
         journey, findings = assess_price_journey([p0_stage, p1_stage, p2_stage], stages_scanned=["product", "cart"])
         assert journey.initial_price == 999.0
         assert journey.cart_price is None, "Uncaptured cart price must remain None"
-        assert journey.final_observed_price == 999.0
+        assert journey.final_observed_price is None, "When checkout is unreached, final_observed_price must strictly be None"
         assert journey.delta_01 is None, "Delta 01 cannot be computed without cart price"
         assert not journey.is_drip_pricing
+        assert journey.dark_pattern_assessment == DarkPatternAssessmentStatus.INCONCLUSIVE
+
+    def test_no_checkout_means_no_p2(self):
+        """P2 may only have a value if checkout_reached == true."""
+        p0_stage = PriceStage(stage="product", stage_label="1. Product", total=1999.0, is_captured=True)
+        p1_stage = PriceStage(stage="cart", stage_label="2. Cart", total=None, is_captured=False)
+        # Even if a stage object somehow has a total, if checkout wasn't reached, p2 must be None
+        p2_stage = PriceStage(stage="checkout", stage_label="3. Checkout", total=1999.0, is_captured=True)
+
+        journey, _ = assess_price_journey([p0_stage, p1_stage, p2_stage], stages_scanned=["product"])
+        assert journey.checkout_reached is False
+        assert journey.final_observed_price is None, "P2 must strictly be None when checkout_reached is False"
+        assert journey.dark_pattern_assessment == DarkPatternAssessmentStatus.INCONCLUSIVE
+
+    def test_no_cart_means_no_p1(self):
+        """P1 may only have a value if cart_reached == true."""
+        p0_stage = PriceStage(stage="product", stage_label="1. Product", total=1999.0, is_captured=True)
+        p1_stage = PriceStage(stage="cart", stage_label="2. Cart", total=1999.0, is_captured=True)
+
+        journey, _ = assess_price_journey([p0_stage, p1_stage], stages_scanned=["product"])
+        assert journey.cart_price is None, "P1 must strictly be None when cart_reached is False"
 
 
 class TestPriceComponentReconciliation:

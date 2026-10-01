@@ -51,7 +51,7 @@ export type DetectionMethod =
 // ─── Price Component & Journey ───────────────────────────────────────────────
 
 export type PriceState = "product" | "cart" | "checkout" | "payment" | "unknown";
-export type DarkPatternAssessmentStatus = "DETECTED" | "POTENTIAL_SIGNAL" | "EVALUATED_CLEAN" | "INCONCLUSIVE";
+export type DarkPatternAssessmentStatus = "DETECTED" | "POTENTIAL_SIGNAL" | "EVALUATED_CLEAN" | "INCONCLUSIVE" | "PRICE_CHANGE_DETECTED" | "NOT_EVALUATED";
 export type ActionPolicyTier = "SAFE" | "CAUTION" | "BLOCKED";
 
 export interface PriceComponent {
