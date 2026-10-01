@@ -57,9 +57,19 @@ export default function DualModeAuditPage({ params }: { params: Promise<{ id: st
 
   useEffect(() => {
     fetchScan();
-    const interval = setInterval(fetchScan, 1500);
-    return () => clearInterval(interval);
-  }, [fetchScan]);
+    if (!scan || scan.status === "queued" || scan.status === "running") {
+      const interval = setInterval(() => {
+        setScan(prev => {
+          if (prev?.status === "done" || prev?.status === "error") {
+            clearInterval(interval);
+          }
+          return prev;
+        });
+        fetchScan();
+      }, 1500);
+      return () => clearInterval(interval);
+    }
+  }, [fetchScan, scan?.status]);
 
   const findings = scan?.findings || [];
   const risk = scan?.risk_assessment;
@@ -165,29 +175,60 @@ export default function DualModeAuditPage({ params }: { params: Promise<{ id: st
                     </div>
                   )}
 
-                  {/* Minimal Journey Visualization */}
-                  <div className="flex items-center gap-6 py-6 border-y border-gray-200">
+                  {/* 3-Stage Price Journey: Advertised → Cart → Checkout */}
+                  <div className="flex flex-wrap items-center gap-4 py-6 border-y border-gray-200">
+                    {/* P0: Advertised */}
                     <div className="space-y-1">
                       <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Advertised</div>
                       <div className="text-xl font-bold text-gray-900">
                         {journey.initial_price !== null && journey.initial_price !== undefined ? `₹${journey.initial_price.toLocaleString()}` : "—"}
                       </div>
                     </div>
-                    
-                    <ArrowRight className="w-5 h-5 text-gray-300" />
-                    
+
+                    <ArrowRight className="w-4 h-4 text-gray-300 flex-shrink-0" />
+
+                    {/* P1: Cart */}
                     <div className="space-y-1">
-                      <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Checkout</div>
-                      <div className="text-xl font-bold text-gray-900">
-                         {journey.final_observed_price !== null && journey.final_observed_price !== undefined ? `₹${journey.final_observed_price.toLocaleString()}` : "—"}
+                      <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Cart</div>
+                      <div className={`text-xl font-bold ${
+                        journey.cart_price !== null && journey.cart_price !== undefined ? "text-gray-900" : "text-gray-400"
+                      }`}>
+                        {journey.cart_price !== null && journey.cart_price !== undefined
+                          ? `₹${journey.cart_price.toLocaleString()}`
+                          : "Not captured"}
                       </div>
                     </div>
 
-                    {journey.delta_total && journey.delta_total > 0 ? (
+                    <ArrowRight className="w-4 h-4 text-gray-300 flex-shrink-0" />
+
+                    {/* P2: Checkout — only show real price if checkout was actually reached */}
+                    <div className="space-y-1">
+                      <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Checkout</div>
+                      <div className={`text-xl font-bold ${
+                        journey.checkout_reached && journey.final_observed_price !== null && journey.final_observed_price !== undefined
+                          ? "text-gray-900" : "text-gray-400"
+                      }`}>
+                        {journey.checkout_reached && journey.final_observed_price !== null && journey.final_observed_price !== undefined
+                          ? `₹${journey.final_observed_price.toLocaleString()}`
+                          : journey.cart_price !== null && journey.cart_price !== undefined
+                            ? "Not reached"
+                            : "—"}
+                      </div>
+                    </div>
+
+                    {/* Delta Badge — only show if checkout was reached and there's an increase */}
+                    {journey.checkout_reached && journey.delta_total && journey.delta_total > 0 ? (
                       <div className="ml-auto flex flex-col items-end space-y-1">
-                         <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Final Change</div>
+                         <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Total Increase</div>
                          <div className="text-lg font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded">
                            +₹{journey.delta_total.toLocaleString()}
+                         </div>
+                      </div>
+                    ) : journey.cart_price && journey.delta_01 && journey.delta_01 > 0 ? (
+                      <div className="ml-auto flex flex-col items-end space-y-1">
+                         <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Cart Increase</div>
+                         <div className="text-lg font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded">
+                           +₹{journey.delta_01.toLocaleString()}
                          </div>
                       </div>
                     ) : null}

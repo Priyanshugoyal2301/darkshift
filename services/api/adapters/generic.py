@@ -94,7 +94,7 @@ class GenericAdapter(BasePlatformAdapter):
         lower_url = url.lower()
         lower_text = text.lower()
 
-        if "/cart" in lower_url or "/bag" in lower_url or "/basket" in lower_url:
+        if "/cart" in lower_url or "/bag" in lower_url or "/basket" in lower_url or "-cart" in lower_url or "cart." in lower_url:
             score += 45.0
 
         if not html:
@@ -145,7 +145,7 @@ class GenericAdapter(BasePlatformAdapter):
         lower_url = url.lower()
         lower_text = text.lower()
 
-        if "/checkout" in lower_url or "/buy" in lower_url or "/review" in lower_url:
+        if "/checkout" in lower_url or "/buy" in lower_url or "/review" in lower_url or "-checkout" in lower_url or "checkout." in lower_url:
             score += 45.0
 
         if any(kw in lower_text for kw in ["order summary", "shipping address", "delivery address", "payment options", "payment method"]):

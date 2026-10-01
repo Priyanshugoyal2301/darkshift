@@ -363,13 +363,21 @@ class AcquisitionOrchestrator:
                     else:
                         btn = await page.query_selector(f"button:has-text('{c_dec.text}'), a:has-text('{c_dec.text}'), input[value='{c_dec.text}']")
 
+                    url_before_cart = page.url
                     if btn:
-                        await btn.click(timeout=8000)
+                        # Use expect_navigation to handle full-page redirects (window.location.href)
+                        # as well as SPA-style navigation (no redirect).
+                        try:
+                            async with page.expect_navigation(timeout=8000, wait_until="domcontentloaded"):
+                                await btn.click(timeout=8000)
+                        except Exception:
+                            # No full-page navigation occurred (SPA drawer / modal)
+                            pass
                     else:
                         await page.keyboard.press("Enter")
 
-                    # Settle dynamic SPA drawer / network
-                    await page.wait_for_timeout(3500)
+                    # Settle dynamic SPA drawer / network / JS
+                    await page.wait_for_timeout(2500)
 
                     cart_url = page.url
                     html_p1 = await page.content()
@@ -454,11 +462,18 @@ class AcquisitionOrchestrator:
                                 co_btn = await page.query_selector(f"button:has-text('{t_dec.text}'), a:has-text('{t_dec.text}')")
 
                             if co_btn:
-                                await co_btn.click(timeout=8000)
+                                # Use expect_navigation to handle full-page redirects and SPA transitions
+                                try:
+                                    async with page.expect_navigation(timeout=8000, wait_until="domcontentloaded"):
+                                        await co_btn.click(timeout=8000)
+                                except Exception:
+                                    # No full-page navigation (SPA/modal checkout)
+                                    pass
                             else:
                                 await page.keyboard.press("Enter")
 
-                            await page.wait_for_timeout(3500)
+                            # Settle dynamic JS and network
+                            await page.wait_for_timeout(2500)
 
                             co_url = page.url
                             html_p2 = await page.content()
