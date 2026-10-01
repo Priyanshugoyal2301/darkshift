@@ -176,6 +176,20 @@ export default function DualModeAuditPage({ params }: { params: Promise<{ id: st
                   </div>
                 </div>
               )}
+
+              {/* Captured Page Viewport Snapshot */}
+              {(scan?.screenshot_base64 || stages[0]?.screenshot_b64) && (
+                <div className="pt-6 border-t border-gray-200 space-y-2">
+                  <div className="text-[10px] font-bold tracking-widest text-gray-400 uppercase">Captured Page Snapshot</div>
+                  <div className="border border-gray-200 rounded-lg overflow-hidden bg-white shadow-sm hover:shadow-md transition-shadow">
+                    <img
+                      src={scan?.screenshot_base64 || stages[0]?.screenshot_b64}
+                      alt="Captured Viewport Snapshot"
+                      className="w-full object-contain max-h-[340px] bg-gray-50"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* RIGHT COLUMN: Analysis & Evidence (65%) */}

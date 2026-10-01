@@ -14,6 +14,11 @@ Capabilities:
 
 from __future__ import annotations
 import sys
+import asyncio
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 import base64
 import time
 import uuid

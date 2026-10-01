@@ -98,70 +98,19 @@ class AcquisitionOrchestrator:
         target_meta.http_status = http_result.status_code
         target_meta.final_url = http_result.final_url
 
-        # Check for access blocking immediately
+        # Check if Level 1 HTTP encountered anti-bot mitigation or restriction
         if http_result.access_status in (AccessStatus.BOT_CHALLENGE, AccessStatus.CAPTCHA_PRESENT, AccessStatus.FORBIDDEN, AccessStatus.RATE_LIMITED):
             logs.append(AuditLogEntry(
                 timestamp=format_ts(),
-                stage="ACCESS_RESTRICTED",
-                message=f"Access blocked by target server: {http_result.access_status.value} ({http_result.access_reason})"
+                stage="HTTP_CHALLENGED",
+                message=f"Level 1 HTTP returned {http_result.access_status.value} ({http_result.access_reason}). Escalating to Level 2 Chromium Browser..."
             ))
-
-            access_diag = AccessDiagnostics(
-                status=http_result.access_status,
-                initial_http_status=http_result.status_code,
-                browser_status="BLOCKED",
-                redirect_chain=http_result.redirect_chain,
-                block_reason=http_result.access_reason
-            )
-
-            crawler_diag = CrawlerDiagnostics(
-                initial_http_status=http_result.status_code,
-                redirect_chain=http_result.redirect_chain,
-                browser_status="BLOCKED",
-                platform="unknown",
-                page_type=page_type.value,
-                product_state="BLOCKED",
-                cart_state="NOT_REACHED",
-                checkout_state="NOT_REACHED",
-                price_source="NONE",
-                price_confidence=0.0,
-                candidate_count=0,
-                actions_examined=0,
-                actions_rejected=0,
-                last_successful_action=None,
-                failure_stage="access",
-                failure_reason=http_result.access_reason
-            )
-
-            # Never report clean/low risk when blocked
-            from schemas import RiskAssessment, ScanCoverage
-            risk = RiskAssessment(
-                risk_level="UNDETERMINED",
-                risk_score=0,
-                checks_performed=14,
-                signals_found=0,
-                coverage_sufficient=False,
-                summary=f"Website access restricted: {http_result.access_status.value}. Anti-automation challenge prevented inspection."
-            )
-
-            return ScanResult(
-                scan_id=scan_id,
-                url=url,
-                mode=ScanMode.URL_AUDIT,
-                status=ScanStatus.DONE,
-                started_at=start_time,
-                completed_at=time.time(),
-                pages_analyzed=0,
-                findings=[],
-                risk_assessment=risk,
-                scan_coverage=ScanCoverage(stages_scanned=[], coverage_score=0),
-                site_profile=SiteProfile(access=http_result.access_status, page_type=page_type),
-                access_diagnostics=access_diag,
-                crawler_diagnostics=crawler_diag,
-                audit_logs=logs,
-                target_metadata=target_meta,
-                error=http_result.access_reason
-            )
+        else:
+            logs.append(AuditLogEntry(
+                timestamp=format_ts(),
+                stage="HTTP_ACQUISITION_OK",
+                message=f"Level 1 HTTP successful (Status {http_result.status_code})."
+            ))
 
         # ─── STEP 3: Level 2 Browser Acquisition (Playwright) ────────────────
         logs.append(AuditLogEntry(

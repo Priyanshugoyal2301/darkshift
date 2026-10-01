@@ -12,32 +12,19 @@ from schemas import AccessStatus, PageType
 
 BOT_SIGNALS = [
     "please verify you are a human",
-    "checking your browser",
-    "access denied",
-    "shieldsquare",
-    "perimeterx",
-    "kasada",
-    "cloudflare",
+    "checking your browser before accessing",
+    "attention required! | cloudflare",
     "security verification",
-    "recaptcha",
-    "hcaptcha",
     "cf-chl-bypass",
+    "cf-turnstile-wrapper",
     "unusual traffic from your computer network",
-    "bot detection",
     "press & hold to confirm you are a human",
     "robot check",
-    "automated access",
-    "bot detected",
     "validate your identity",
-    "e002",
-    "something went wrong!\nplease try again later",
-    "something went wrong! please try again later",
 ]
 
 CAPTCHA_SIGNALS = [
-    "g-recaptcha",
-    "h-captcha",
-    "cf-turnstile",
+    "cf-turnstile-wrapper",
     "captcha-delivery",
     "captcha_box",
 ]
@@ -63,7 +50,7 @@ class AccessClassifier:
         if (http_status is None or http_status == 0) and not html:
             return AccessStatus.NETWORK_ERROR, "Target host unreachable or connection refused."
 
-        lower_text = (visible_text + " " + html[:1500]).lower()
+        lower_text = (visible_text + " " + html[:3000]).lower()
 
         if http_status == 401:
             return AccessStatus.LOGIN_REQUIRED, "HTTP 401 Unauthorized — Authentication required to access product."
@@ -78,15 +65,17 @@ class AccessClassifier:
             return AccessStatus.RATE_LIMITED, "HTTP 503 Service Unavailable — Target server throttled or unavailable."
 
         if http_status and http_status >= 500:
-            if any(b in lower_text for b in ("e002", "something went wrong", "retry", "bot", "blocked")):
-                return AccessStatus.BOT_CHALLENGE, f"Anti-automation mitigation challenge (HTTP {http_status} / E002) detected."
             return AccessStatus.NETWORK_ERROR, f"HTTP {http_status} Server Error — Target server rejected or failed request."
 
-        # Check for CAPTCHA
+        # If 200 OK and has substantial content (>4000 bytes html and >200 visible text), it is NOT a challenge page
+        if http_status == 200 and len(html) > 4000 and len(visible_text) > 200:
+            return AccessStatus.ACCESS_OK, None
+
+        # Check for CAPTCHA challenge in thin pages
         if any(c in lower_text for c in CAPTCHA_SIGNALS):
             return AccessStatus.CAPTCHA_PRESENT, "Interactive CAPTCHA verification challenge detected."
 
-        # Check for Bot challenge in 200 OK
+        # Check for Bot challenge in thin pages
         if any(b in lower_text for b in BOT_SIGNALS):
             return AccessStatus.BOT_CHALLENGE, "Client-side browser verification / bot mitigation challenge."
 
