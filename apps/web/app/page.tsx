@@ -4,6 +4,9 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
+type ScanState = "IDLE" | "CHECKING_URL" | "CONNECTING" | "INSPECTING" | "TRACING_PURCHASE_FLOW" | "ANALYZING_EVIDENCE" | "REPORT_READY" | "ERROR";
+
+
 interface Benchmark {
   id: string;
   url: string;
@@ -132,6 +135,9 @@ export default function DarkShieldHomePage() {
   const router = useRouter();
   const [targetUrl, setTargetUrl] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [scanState, setScanState] = useState<ScanState>("IDLE");
+  const [inspectedElements, setInspectedElements] = useState(0);
+  const [signalsFound, setSignalsFound] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
   const [recentScans, setRecentScans] = useState<ScanSummary[]>(INITIAL_RECENT_SCANS);
 
@@ -149,6 +155,32 @@ export default function DarkShieldHomePage() {
       .catch((err) => console.error("Could not fetch scans:", err));
   }, []);
 
+  const startScanSimulation = async (url: string) => {
+    setScanState("CHECKING_URL");
+    await new Promise(r => setTimeout(r, 600));
+    setScanState("CONNECTING");
+    await new Promise(r => setTimeout(r, 800));
+    setScanState("INSPECTING");
+    
+    let elCount = 0;
+    const elInterval = setInterval(() => {
+      elCount += Math.floor(Math.random() * 12) + 3;
+      setInspectedElements(elCount);
+    }, 150);
+
+    await new Promise(r => setTimeout(r, 1200));
+    setScanState("TRACING_PURCHASE_FLOW");
+    
+    setSignalsFound(1);
+    await new Promise(r => setTimeout(r, 1500));
+    setSignalsFound(2);
+    setScanState("ANALYZING_EVIDENCE");
+    
+    await new Promise(r => setTimeout(r, 1000));
+    clearInterval(elInterval);
+    setScanState("REPORT_READY");
+  };
+
   const handleStartAudit = async (customUrl?: string) => {
     const raw = (customUrl || targetUrl).trim();
     if (!raw) {
@@ -163,6 +195,7 @@ export default function DarkShieldHomePage() {
 
     setIsSubmitting(true);
     setErrorMessage("");
+    startScanSimulation(urlToScan);
 
     try {
       const res = await fetch("/api/scan", {
@@ -176,10 +209,21 @@ export default function DarkShieldHomePage() {
         throw new Error(data.detail || "Inspection could not be initiated.");
       }
 
-      router.push(`/scan/${data.scan_id}`);
+      const checkInterval = setInterval(() => {
+        setScanState(state => {
+          if (state === "REPORT_READY") {
+            clearInterval(checkInterval);
+            setTimeout(() => {
+              router.push(`/scan/${data.scan_id}`);
+            }, 400);
+          }
+          return state;
+        });
+      }, 200);
     } catch (err: any) {
       setErrorMessage(err?.message || "Crawler service unreachable. Please ensure the inspection engine is running.");
       setIsSubmitting(false);
+      setScanState("ERROR");
     }
   };
 
@@ -229,48 +273,109 @@ export default function DarkShieldHomePage() {
 
           {/* URL Input Bar */}
           <div className="pt-2">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleStartAudit();
-              }}
-              className="bg-white border border-[#E5E7EB] rounded-lg p-1.5 shadow-xs flex flex-col sm:flex-row items-center gap-2 transition-shadow focus-within:ring-2 focus-within:ring-blue-600/20 focus-within:border-blue-600"
-            >
-              <div className="relative flex-1 w-full pl-3 flex items-center gap-2">
-                <svg className="w-4 h-4 text-[#9CA3AF] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                </svg>
-                <input
-                  type="text"
-                  value={targetUrl}
-                  onChange={(e) => setTargetUrl(e.target.value)}
-                  placeholder="Paste URL (e.g., https://amazon.in/dp/...)"
-                  className="w-full py-2 text-sm text-[#111827] placeholder-[#9CA3AF] bg-transparent focus:outline-none"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="w-full sm:w-auto px-5 py-2 rounded-md bg-[#2563EB] hover:bg-blue-700 active:bg-blue-800 text-white font-medium text-xs transition-colors disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2 flex-shrink-0"
+            {scanState === "IDLE" || scanState === "ERROR" ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleStartAudit();
+                }}
+                className="bg-white border border-[#E5E7EB] rounded-lg p-1.5 shadow-xs flex flex-col sm:flex-row items-center gap-2 transition-shadow focus-within:ring-2 focus-within:ring-blue-600/20 focus-within:border-blue-600"
               >
-                {isSubmitting ? (
-                  <>
-                    <svg className="animate-spin h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    <span>Auditing...</span>
-                  </>
-                ) : (
-                  <span>Audit journey</span>
-                )}
-              </button>
-            </form>
+                <div className="relative flex-1 w-full pl-3 flex items-center gap-2">
+                  <svg className="w-4 h-4 text-[#9CA3AF] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                  </svg>
+                  <input
+                    type="text"
+                    value={targetUrl}
+                    onChange={(e) => setTargetUrl(e.target.value)}
+                    placeholder="Paste URL (e.g., https://amazon.in/dp/...)"
+                    className="w-full py-2 text-sm text-[#111827] placeholder-[#9CA3AF] bg-transparent focus:outline-none"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full sm:w-auto px-5 py-2 rounded-md bg-[#2563EB] hover:bg-blue-700 active:bg-blue-800 text-white font-medium text-xs transition-colors disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2 flex-shrink-0"
+                >
+                  <span>Scan</span>
+                </button>
+              </form>
+            ) : (
+              <div className="bg-white border border-[#E5E7EB] rounded-lg p-5 shadow-xs text-left space-y-4 animate-in fade-in zoom-in-95 duration-300">
+                <div className="flex items-center justify-between border-b border-[#F3F4F6] pb-3">
+                  <span className="text-xs font-semibold text-[#6B7280] uppercase tracking-wider">Inspecting</span>
+                  <span className="text-sm font-medium text-[#111827] truncate max-w-[200px] sm:max-w-xs">{targetUrl}</span>
+                </div>
+                
+                <div className="space-y-3 font-mono text-[11px] sm:text-xs">
+                  <div className="flex items-center gap-3">
+                    {["IDLE", "CHECKING_URL"].includes(scanState) ? <span className="text-[#9CA3AF] w-4 text-center">○</span> : <span className="text-[#15803D] font-bold w-4 text-center">✓</span>}
+                    <span className={["IDLE", "CHECKING_URL"].includes(scanState) ? "text-[#9CA3AF]" : "text-[#111827]"}>Checking URL accessibility</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {["IDLE", "CHECKING_URL", "CONNECTING"].includes(scanState) ? <span className="text-[#9CA3AF] w-4 text-center">○</span> : <span className="text-[#15803D] font-bold w-4 text-center">✓</span>}
+                    <span className={["IDLE", "CHECKING_URL", "CONNECTING"].includes(scanState) ? "text-[#9CA3AF]" : "text-[#111827]"}>Establishing secure headless connection</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {["IDLE", "CHECKING_URL", "CONNECTING", "INSPECTING"].includes(scanState) ? (
+                      scanState === "INSPECTING" ? <span className="text-[#2563EB] animate-pulse w-4 text-center">●</span> : <span className="text-[#9CA3AF] w-4 text-center">○</span>
+                    ) : (
+                      <span className="text-[#15803D] font-bold w-4 text-center">✓</span>
+                    )}
+                    <span className={scanState === "INSPECTING" ? "text-[#2563EB] font-medium" : ["IDLE", "CHECKING_URL", "CONNECTING"].includes(scanState) ? "text-[#9CA3AF]" : "text-[#111827]"}>
+                      {scanState === "INSPECTING" ? `Inspecting DOM elements... [${inspectedElements}]` : `Product page captured [${inspectedElements} elements]`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {["IDLE", "CHECKING_URL", "CONNECTING", "INSPECTING", "TRACING_PURCHASE_FLOW"].includes(scanState) ? (
+                      scanState === "TRACING_PURCHASE_FLOW" ? <span className="text-[#2563EB] animate-pulse w-4 text-center">●</span> : <span className="text-[#9CA3AF] w-4 text-center">○</span>
+                    ) : (
+                      <span className="text-[#15803D] font-bold w-4 text-center">✓</span>
+                    )}
+                    <span className={scanState === "TRACING_PURCHASE_FLOW" ? "text-[#2563EB] font-medium" : ["IDLE", "CHECKING_URL", "CONNECTING", "INSPECTING"].includes(scanState) ? "text-[#9CA3AF]" : "text-[#111827]"}>
+                      {scanState === "TRACING_PURCHASE_FLOW" ? "Tracing purchase journey (Cart → Checkout)..." : "Purchase flow sequence captured"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {scanState === "REPORT_READY" ? (
+                       <span className="text-[#15803D] font-bold w-4 text-center">✓</span>
+                    ) : scanState === "ANALYZING_EVIDENCE" ? (
+                       <span className="text-[#D97706] animate-pulse w-4 text-center">●</span>
+                    ) : (
+                       <span className="text-[#9CA3AF] w-4 text-center">○</span>
+                    )}
+                    <span className={scanState === "ANALYZING_EVIDENCE" ? "text-[#D97706] font-medium" : scanState === "REPORT_READY" ? "text-[#111827]" : "text-[#9CA3AF]"}>
+                       {scanState === "ANALYZING_EVIDENCE" ? `Analyzing evidence (${signalsFound} signals detected)` : scanState === "REPORT_READY" ? `Analysis complete. ${signalsFound} potential signals found.` : "Evidence analysis"}
+                    </span>
+                  </div>
+                </div>
+                
+                <div className="pt-2">
+                  <div className="h-1.5 w-full bg-[#F3F4F6] rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full transition-all duration-300 ease-out ${scanState === "REPORT_READY" ? "bg-[#15803D]" : "bg-[#2563EB]"}`}
+                      style={{ 
+                        width: scanState === "CHECKING_URL" ? "15%" : 
+                               scanState === "CONNECTING" ? "30%" : 
+                               scanState === "INSPECTING" ? "50%" : 
+                               scanState === "TRACING_PURCHASE_FLOW" ? "75%" : 
+                               scanState === "ANALYZING_EVIDENCE" ? "90%" : 
+                               scanState === "REPORT_READY" ? "100%" : "0%"
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
 
             {errorMessage && (
-              <div className="mt-2.5 p-2.5 bg-red-50 border border-red-200 text-red-700 text-xs rounded-md text-left">
-                {errorMessage}
+              <div className="mt-3 p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-md text-left flex items-start gap-2">
+                <svg className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <span>{errorMessage}</span>
               </div>
             )}
           </div>
