@@ -6,7 +6,7 @@ Keeps backend in sync with the canonical TypeScript type definitions.
 from __future__ import annotations
 from enum import Enum
 from typing import Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import time
 import uuid
 
@@ -103,7 +103,116 @@ class ActionClassification(BaseModel):
     is_payment_context: bool = False
 
 
+# ─── Crawler v3 Multi-Strategy Schemas ────────────────────────────────────────
+
+class AccessStatus(str, Enum):
+    ACCESS_OK = "ACCESS_OK"
+    ACCESS_REDIRECTED = "ACCESS_REDIRECTED"
+    LOGIN_REQUIRED = "LOGIN_REQUIRED"
+    RATE_LIMITED = "RATE_LIMITED"
+    FORBIDDEN = "FORBIDDEN"
+    BOT_CHALLENGE = "BOT_CHALLENGE"
+    CAPTCHA_PRESENT = "CAPTCHA_PRESENT"
+    JS_REQUIRED = "JS_REQUIRED"
+    TIMEOUT = "TIMEOUT"
+    NETWORK_ERROR = "NETWORK_ERROR"
+
+
+class PlatformType(str, Enum):
+    SHOPIFY = "shopify"
+    WOOCOMMERCE = "woocommerce"
+    MAGENTO = "magento"
+    BIGCOMMERCE = "bigcommerce"
+    CUSTOM = "custom"
+    GENERIC = "generic"
+
+
+class PageType(str, Enum):
+    PRODUCT = "product"
+    CART = "cart"
+    CHECKOUT = "checkout"
+    HOMEPAGE = "homepage"
+    CATEGORY = "category"
+    SEARCH = "search"
+    UNKNOWN = "unknown"
+
+
+class AccessDiagnostics(BaseModel):
+    status: AccessStatus = AccessStatus.ACCESS_OK
+    initial_http_status: Optional[int] = 200
+    browser_status: str = "OK"
+    redirect_chain: list[str] = []
+    block_reason: Optional[str] = None
+
+
+class SiteProfile(BaseModel):
+    platform: PlatformType = PlatformType.GENERIC
+    page_type: PageType = PageType.PRODUCT
+    rendering: str = "client_hydrated"
+    currency: str = "INR"
+    access: AccessStatus = AccessStatus.ACCESS_OK
+    cart_model: str = "drawer"
+    checkout_model: str = "redirect"
+
+
+class PriceCandidate(BaseModel):
+    amount: float
+    currency: str = "INR"
+    source: str                          # "json_ld", "network_json", "hydration", "dom", "adapter", "meta"
+    confidence: float = 0.5
+    stage: str = "product"
+    selector: Optional[str] = None
+    response_url: Optional[str] = None
+    semantic_label: str = "Price Candidate"
+    is_mrp: bool = False
+    is_discount: bool = False
+    belongs_to_product: bool = True
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def parse_confidence(cls, v):
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            v_upper = v.upper()
+            if v_upper == "HIGH":
+                return 0.95
+            elif v_upper == "MEDIUM":
+                return 0.80
+            elif v_upper == "LOW":
+                return 0.65
+            try:
+                return float(v)
+            except ValueError:
+                return 0.50
+        return 0.50
+
+
+
+class CrawlerDiagnostics(BaseModel):
+    initial_http_status: Optional[int] = 200
+    redirect_chain: list[str] = []
+    browser_status: str = "OK"
+    platform: str = "generic"
+    page_type: str = "product"
+    product_state: str = "CAPTURED"
+    cart_state: str = "NOT_REACHED"
+    checkout_state: str = "NOT_REACHED"
+    p0: Optional[float] = None
+    p1: Optional[float] = None
+    p2: Optional[float] = None
+    price_source: str = "NONE"
+    price_confidence: float = 0.0
+    candidate_count: int = 0
+    actions_examined: int = 0
+    actions_rejected: int = 0
+    last_successful_action: Optional[str] = None
+    failure_stage: Optional[str] = None
+    failure_reason: Optional[str] = None
+
+
 class PriceComponent(BaseModel):
+
     component_type: str = "unknown"  # subtotal, delivery, platform_fee, convenience_fee, insurance, donation, discount, tax, unknown
     label: str
     amount: float
@@ -347,12 +456,18 @@ class ScanResult(BaseModel):
     # Secondary transparency score
     transparency_score: Optional[TransparencyScore] = None
 
+    # Crawler v3 Multi-Strategy Diagnostics
+    site_profile: Optional[SiteProfile] = None
+    access_diagnostics: Optional[AccessDiagnostics] = None
+    crawler_diagnostics: Optional[CrawlerDiagnostics] = None
+
     findings_by_pattern: dict[str, int] = {}
     error: Optional[str] = None
 
     screenshot_base64: Optional[str] = None
     audit_logs: list[AuditLogEntry] = []
     target_metadata: Optional[TargetMetadata] = None
+
 
 
 # ─── API Contracts ────────────────────────────────────────────────────────────

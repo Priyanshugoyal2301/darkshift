@@ -54,7 +54,93 @@ export type PriceState = "product" | "cart" | "checkout" | "payment" | "unknown"
 export type DarkPatternAssessmentStatus = "DETECTED" | "POTENTIAL_SIGNAL" | "EVALUATED_CLEAN" | "INCONCLUSIVE" | "PRICE_CHANGE_DETECTED" | "NOT_EVALUATED";
 export type ActionPolicyTier = "SAFE" | "CAUTION" | "BLOCKED";
 
+// ─── Crawler v3 Multi-Strategy Schemas ────────────────────────────────────────
+
+export type AccessStatus =
+  | "ACCESS_OK"
+  | "ACCESS_REDIRECTED"
+  | "LOGIN_REQUIRED"
+  | "RATE_LIMITED"
+  | "FORBIDDEN"
+  | "BOT_CHALLENGE"
+  | "CAPTCHA_PRESENT"
+  | "JS_REQUIRED"
+  | "TIMEOUT"
+  | "NETWORK_ERROR";
+
+export type PlatformType =
+  | "shopify"
+  | "woocommerce"
+  | "magento"
+  | "bigcommerce"
+  | "custom"
+  | "generic";
+
+export type PageType =
+  | "product"
+  | "cart"
+  | "checkout"
+  | "homepage"
+  | "category"
+  | "search"
+  | "unknown";
+
+export interface AccessDiagnostics {
+  status: AccessStatus;
+  initial_http_status?: number;
+  browser_status: string;
+  redirect_chain: string[];
+  block_reason?: string;
+}
+
+export interface SiteProfile {
+  platform: PlatformType;
+  page_type: PageType;
+  rendering: string;
+  currency: string;
+  access: AccessStatus;
+  cart_model: string;
+  checkout_model: string;
+}
+
+export interface PriceCandidate {
+  amount: number;
+  currency: string;
+  source: string;
+  confidence: number;
+  stage: string;
+  selector?: string;
+  response_url?: string;
+  semantic_label: string;
+  is_mrp: boolean;
+  is_discount: boolean;
+  belongs_to_product: boolean;
+}
+
+export interface CrawlerDiagnostics {
+  initial_http_status?: number;
+  redirect_chain: string[];
+  browser_status: string;
+  platform: string;
+  page_type: string;
+  product_state: string;
+  cart_state: string;
+  checkout_state: string;
+  p0?: number | null;
+  p1?: number | null;
+  p2?: number | null;
+  price_source: string;
+  price_confidence: number;
+  candidate_count: number;
+  actions_examined: number;
+  actions_rejected: number;
+  last_successful_action?: string;
+  failure_stage?: string;
+  failure_reason?: string;
+}
+
 export interface PriceComponent {
+
   component_type: string;     // subtotal, delivery, platform_fee, convenience_fee, insurance, donation, discount, tax, unknown
   label: string;
   amount: number;
@@ -318,6 +404,11 @@ export interface ScanResult {
   // Secondary legacy metric
   transparency_score?: TransparencyScore;
 
+  // Crawler v3 Multi-Strategy Diagnostics
+  site_profile?: SiteProfile;
+  access_diagnostics?: AccessDiagnostics;
+  crawler_diagnostics?: CrawlerDiagnostics;
+
   findings_by_pattern: Partial<Record<CCPAPattern, number>>;
   error?: string;
 
@@ -325,6 +416,7 @@ export interface ScanResult {
   audit_logs?: AuditLogEntry[];
   target_metadata?: TargetMetadata;
 }
+
 
 // ─── API contracts ───────────────────────────────────────────────────────────
 

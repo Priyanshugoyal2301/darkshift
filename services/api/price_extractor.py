@@ -56,11 +56,12 @@ INR_PRICE_REGEX = re.compile(
     re.I
 )
 
-# Explicit exclusion patterns: MRP, strikethrough, savings, discounts, reviews, EMI
+# Explicit exclusion patterns: MRP, strikethrough, savings, discounts, reviews, EMI, navigation ranges
 EXCLUSION_KEYWORDS_REGEX = re.compile(
     r'\b(mrp|m\.r\.p\.?|original price|was price|list price|strikethrough|'
     r'save|you save|savings|discount|coupon|cashback|off\b|'
-    r'ratings?|reviews?|stars?|emi|per month|/month|/mo|duration|days?|hours?)\b',
+    r'ratings?|reviews?|stars?|emi|per month|/month|/mo|duration|days?|hours?|'
+    r'under|above|starting|starts? at|from|gift card|recharge|search-alias|select|option)\b',
     re.I
 )
 
@@ -131,6 +132,9 @@ def extract_product_price(soup: BeautifulSoup, text: str) -> tuple[Optional[floa
 
     # 3. Explicit Sale/Current Price Selectors
     sale_selectors = [
+        ".a-price.aok-align-center .a-offscreen", "span.a-price span.a-offscreen",
+        "#priceblock_ourprice", "#priceblock_dealprice", "#corePrice_feature_div .a-price-whole",
+        ".price-item--sale", ".price--highlight", "span.price--highlight",
         "[data-price]", "[data-offer-price]", "[data-selling-price]",
         ".sale-price", ".offer-price", ".deal-price", ".selling-price",
         ".current-price", ".price-current", ".special-price", ".product-price",
@@ -155,9 +159,17 @@ def extract_product_price(soup: BeautifulSoup, text: str) -> tuple[Optional[floa
             if val:
                 return val, ExtractionMetadata(source="SEMANTIC_SELECTOR", confidence="HIGH", raw_snippet=f"{sel}: {val}", rejected_values=rejected)
 
-    # 4. Contextual Proximity Regex on text
-    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-    for line in lines:
+    # 4. Contextual Proximity Regex on clean text (excluding header/nav/footer/select/option)
+    clean_lines = []
+    try:
+        clean_soup = BeautifulSoup(str(soup), "html.parser")
+        for tag in clean_soup.find_all(["header", "nav", "footer", "select", "option", "aside", "script", "style"]):
+            tag.decompose()
+        clean_lines = [ln.strip() for ln in clean_soup.get_text(separator="\n", strip=True).split("\n") if ln.strip()]
+    except Exception:
+        clean_lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+
+    for line in clean_lines:
         if len(line) > 120:
             continue
         line_lower = line.lower()
@@ -175,7 +187,7 @@ def extract_product_price(soup: BeautifulSoup, text: str) -> tuple[Optional[floa
                     return val, ExtractionMetadata(source="REGEX_PROXIMITY", confidence="MEDIUM", raw_snippet=line[:80], rejected_values=rejected)
 
     # 5. Fallback: Clean non-excluded price mention
-    for line in lines:
+    for line in clean_lines:
         if len(line) > 100:
             continue
         if EXCLUSION_KEYWORDS_REGEX.search(line):

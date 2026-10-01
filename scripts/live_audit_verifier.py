@@ -1,24 +1,26 @@
 """
-DarkShield — Live Site Audit Harness
-Runs live audits against real-world ecommerce targets:
-- theclubfactory.in
-- Amazon.in
-- Flipkart
-- Myntra
+DarkShield — Live Site Audit Harness v3 (Multi-Strategy Acquisition)
+Runs live audits against 6 real-world ecommerce product targets:
+1. Amazon India product URL
+2. Flipkart product URL
+3. Myntra product URL
+4. Shopify product URL
+5. WooCommerce product URL
+6. Custom Indian ecommerce product URL
 
-Outputs the required schema:
-P0
-P1
-P2
-cart_reached
-checkout_reached
-price_assessment
-journey_coverage
-findings
-evidence_text
-evidence_selector
-last_successful_action
-failed_action
+Outputs required schema for every audit:
+- P0
+- P1
+- P2
+- product_reached
+- cart_reached
+- checkout_reached
+- price_source
+- price_confidence
+- platform
+- page_type
+- failure_stage
+- failure_reason
 """
 
 import sys
@@ -37,9 +39,10 @@ API_BASE = "http://127.0.0.1:8000"
 
 
 async def run_target_audit(client: httpx.AsyncClient, target_name: str, target_url: str):
-    print(f"\n=======================================================")
-    print(f"AUDITING LIVE TARGET: {target_name} ({target_url})")
-    print(f"=======================================================")
+    print(f"\n================================================================================")
+    print(f"AUDITING LIVE PRODUCT TARGET: {target_name}")
+    print(f"URL: {target_url}")
+    print(f"================================================================================")
 
     try:
         # 1. Trigger scan via API
@@ -65,52 +68,43 @@ async def run_target_audit(client: httpx.AsyncClient, target_name: str, target_u
                 if status in ("done", "failed"):
                     scan_result = poll_data
                     break
-            else:
-                print(f"  ... poll warning: {poll_resp.status_code}")
 
         if not scan_result:
             raise TimeoutError(f"Audit timed out after 85s for {target_url}")
 
-        # 3. Extract and verify fields
+        # 3. Extract structured diagnostics & telemetry
         journey = scan_result.get("price_journey") or {}
         coverage = scan_result.get("scan_coverage") or {}
-        logs = scan_result.get("audit_logs") or []
+        site_profile = scan_result.get("site_profile") or {}
+        crawler_diag = scan_result.get("crawler_diagnostics") or {}
+        access_diag = scan_result.get("access_diagnostics") or {}
         findings = scan_result.get("findings") or []
+        logs = scan_result.get("audit_logs") or []
 
-        p0 = journey.get("initial_price")
-        p1 = journey.get("cart_price")
-        p2 = journey.get("final_observed_price")
+        p0 = crawler_diag.get("p0") if crawler_diag.get("p0") is not None else journey.get("initial_price")
+        p1 = crawler_diag.get("p1") if crawler_diag.get("p1") is not None else journey.get("cart_price")
+        p2 = crawler_diag.get("p2") if crawler_diag.get("p2") is not None else journey.get("final_observed_price")
 
-        cart_reached = "cart" in coverage.get("stages_scanned", [])
-        checkout_reached = bool(journey.get("checkout_reached", False))
+        product_reached = crawler_diag.get("product_state") == "CAPTURED" or (p0 is not None and p0 > 0)
+        cart_reached = crawler_diag.get("cart_state") == "CAPTURED" or "cart" in coverage.get("stages_scanned", [])
+        checkout_reached = crawler_diag.get("checkout_state") == "CAPTURED" or bool(journey.get("checkout_reached", False))
 
-        price_assessment = journey.get("dark_pattern_assessment") or "INCONCLUSIVE"
-        journey_coverage = f"{coverage.get('coverage_score', 0)}%"
+        price_source = crawler_diag.get("price_source") or "NONE"
+        price_confidence = crawler_diag.get("price_confidence") or 0.0
 
-        findings_summary = [f"{f.get('pattern')}: {f.get('title')} ({f.get('confidence_tier')})" for f in findings]
+        platform = crawler_diag.get("platform") or site_profile.get("platform") or "generic"
+        page_type = crawler_diag.get("page_type") or site_profile.get("page_type") or "product"
 
-        evidence_texts = []
-        evidence_selectors = []
-        for f in findings:
-            if f.get("text_snippets"):
-                evidence_texts.extend(f.get("text_snippets")[:2])
-            if f.get("dom_evidence"):
-                for ev in f.get("dom_evidence"):
-                    if ev.get("selector"):
-                        evidence_selectors.append(ev.get("selector"))
-                    if ev.get("text_content"):
-                        evidence_texts.append(ev.get("text_content")[:80])
+        failure_stage = crawler_diag.get("failure_stage") or "None"
+        failure_reason = crawler_diag.get("failure_reason") or "None"
 
-        last_successful_action = None
-        failed_action = None
-
-        for entry in logs:
-            stage = entry.get("stage", "")
-            msg = entry.get("message", "")
-            if stage in ("ACTION_CLICK", "ACTION_POLICY_APPROVE", "STAGE_1_CAPTURED", "STAGE_2_CAPTURED", "STAGE_3_CAPTURED"):
-                last_successful_action = f"[{stage}] {msg}"
-            elif stage in ("STATE_TRANSITION_FAILED", "ACTION_NOTICE", "POLICY_BLOCKED", "CRAWL_BOUNDARY", "POLICY_TERMINATION"):
-                failed_action = f"[{stage}] {msg}"
+        last_successful_action = crawler_diag.get("last_successful_action")
+        if not last_successful_action:
+            for entry in logs:
+                stage = entry.get("stage", "")
+                msg = entry.get("message", "")
+                if stage in ("ACTION_CLICK", "ACTION_POLICY_APPROVE", "STAGE_1_CAPTURED", "STAGE_2_CAPTURED", "STAGE_3_CAPTURED"):
+                    last_successful_action = f"[{stage}] {msg}"
 
         output = {
             "target": target_name,
@@ -119,33 +113,34 @@ async def run_target_audit(client: httpx.AsyncClient, target_name: str, target_u
             "P0": f"₹{p0:,.0f}" if p0 is not None else "UNKNOWN",
             "P1": f"₹{p1:,.0f}" if p1 is not None else "null",
             "P2": f"₹{p2:,.0f}" if p2 is not None else "null",
+            "product_reached": product_reached,
             "cart_reached": cart_reached,
             "checkout_reached": checkout_reached,
-            "price_assessment": price_assessment,
-            "journey_coverage": journey_coverage,
+            "price_source": price_source,
+            "price_confidence": f"{price_confidence:.2f}",
+            "platform": platform,
+            "page_type": page_type,
+            "failure_stage": failure_stage,
+            "failure_reason": failure_reason,
             "findings_count": len(findings),
-            "findings": findings_summary,
-            "evidence_text": evidence_texts[:3],
-            "evidence_selector": evidence_selectors[:3],
-            "last_successful_action": last_successful_action or "None",
-            "failed_action": failed_action or "None"
+            "findings": [f"{f.get('pattern')}: {f.get('title')}" for f in findings],
+            "last_successful_action": last_successful_action or "None"
         }
 
         print("\n--- STRUCTURED AUDIT OUTPUT ---")
-        print(f"Target:                 {output['target']}")
-        print(f"URL:                    {output['url']}")
-        print(f"P0:                     {output['P0']}")
-        print(f"P1:                     {output['P1']}")
-        print(f"P2:                     {output['P2']}")
-        print(f"cart_reached:           {output['cart_reached']}")
-        print(f"checkout_reached:       {output['checkout_reached']}")
-        print(f"price_assessment:       {output['price_assessment']}")
-        print(f"journey_coverage:       {output['journey_coverage']}")
-        print(f"findings:               {output['findings']}")
-        print(f"evidence_text:          {output['evidence_text']}")
-        print(f"evidence_selector:      {output['evidence_selector']}")
-        print(f"last_successful_action: {output['last_successful_action']}")
-        print(f"failed_action:          {output['failed_action']}")
+        print(f"P0:                 {output['P0']}")
+        print(f"P1:                 {output['P1']}")
+        print(f"P2:                 {output['P2']}")
+        print(f"product_reached:    {output['product_reached']}")
+        print(f"cart_reached:       {output['cart_reached']}")
+        print(f"checkout_reached:   {output['checkout_reached']}")
+        print(f"price_source:       {output['price_source']}")
+        print(f"price_confidence:   {output['price_confidence']}")
+        print(f"platform:           {output['platform']}")
+        print(f"page_type:          {output['page_type']}")
+        print(f"failure_stage:      {output['failure_stage']}")
+        print(f"failure_reason:     {output['failure_reason']}")
+        print(f"last_action:        {output['last_successful_action']}")
         print("-------------------------------\n")
 
         return output
@@ -158,25 +153,29 @@ async def run_target_audit(client: httpx.AsyncClient, target_name: str, target_u
             "P0": "UNKNOWN",
             "P1": "null",
             "P2": "null",
+            "product_reached": False,
             "cart_reached": False,
             "checkout_reached": False,
-            "price_assessment": "INCONCLUSIVE",
-            "journey_coverage": "0%",
+            "price_source": "NONE",
+            "price_confidence": "0.00",
+            "platform": "unknown",
+            "page_type": "unknown",
+            "failure_stage": "exception",
+            "failure_reason": str(e)[:120],
             "findings_count": 0,
             "findings": [],
-            "evidence_text": [],
-            "evidence_selector": [],
-            "last_successful_action": "None",
-            "failed_action": f"[EXCEPTION] {str(e)[:100]}"
+            "last_successful_action": "None"
         }
 
 
 async def main():
     targets = [
-        ("The Club Factory", "https://theclubfactory.in/"),
-        ("Amazon India", "https://www.amazon.in/dp/B08N5WRWNW"),
-        ("Flipkart", "https://www.flipkart.com/"),
-        ("Myntra", "https://www.myntra.com/"),
+        ("Amazon India (boAt Bassheads)", "https://www.amazon.in/dp/B071Z8M4KX"),
+        ("Flipkart (iPhone 15)", "https://www.flipkart.com/apple-iphone-15-black-128-gb/p/itm6ac6485515ae4"),
+        ("Myntra (Cotton T-Shirt)", "https://www.myntra.com/tshirts/roadster/roadster-men-black-pure-cotton-t-shirt/2297985/buy"),
+        ("Shopify (The Club Factory)", "https://theclubfactory.in/products/apple-20w-usb-c-power-adapter"),
+        ("WooCommerce (ST Waykar)", "https://stwaykar.in/product/trending-party-wear-saree-pw64/"),
+        ("Custom Indian Retail (Tata CLiQ)", "https://www.tatacliq.com/titan-np1805nm01-workwear-analog-watch-for-men/p-mp000000010992382"),
     ]
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -185,13 +184,15 @@ async def main():
             res = await run_target_audit(client, name, url)
             results.append(res)
 
-    print("\n\n=======================================================")
-    print("ALL LIVE AUDITS SUMMARY")
-    print("=======================================================")
+    print("\n\n========================================================================================================")
+    print("DARKSHIELD CRAWLER V3 — LIVE PRODUCT AUDIT BENCHMARK SUMMARY")
+    print("========================================================================================================")
+    header = f"{'Target':<28} | {'P0':<10} | {'P1':<8} | {'P2':<8} | {'Cart':<5} | {'Checkout':<8} | {'Platform':<11} | {'Price Source':<13} | {'Conf':<5}"
+    print(header)
+    print("-" * len(header))
     for r in results:
-        print(f"{r['target']:<18} | P0: {r['P0']:<10} | P1: {r['P1']:<8} | P2: {r['P2']:<8} | Cart: {str(r['cart_reached']):<5} | Checkout: {str(r['checkout_reached']):<5} | Assessment: {r['price_assessment']}")
+        print(f"{r['target']:<28} | {r['P0']:<10} | {r['P1']:<8} | {r['P2']:<8} | {str(r['cart_reached']):<5} | {str(r['checkout_reached']):<8} | {r['platform']:<11} | {r['price_source']:<13} | {r['price_confidence']:<5}")
 
-    # Save to JSON file for audit record
     output_path = os.path.join(os.path.dirname(__file__), "live_audit_results.json")
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
