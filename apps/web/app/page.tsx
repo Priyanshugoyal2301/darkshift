@@ -263,6 +263,13 @@ export default function DarkShieldHomePage() {
             <span>Automated Purchase Journey Audit & Evidence</span>
           </div>
 
+          <div className="flex justify-center mt-2">
+            <Link href="/audit" className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-gray-900 text-white text-xs font-semibold hover:bg-gray-800 transition-colors shadow-sm">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+              Try Full Website Audit mode
+            </Link>
+          </div>
+
           <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-[#111827]">
             Check a website before you buy.
           </h1>

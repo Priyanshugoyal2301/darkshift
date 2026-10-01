@@ -360,6 +360,35 @@ async def analyze_dom(request: AnalyzeRequest):
     return findings
 
 
+from full_audit import full_audit_store, execute_full_audit, FullAuditState
+
+@app.post("/api/audit/full")
+async def start_full_audit(request: ScanRequest, background_tasks: BackgroundTasks):
+    try:
+        safe_url = validate_url_security(str(request.url).strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    audit_id = uuid.uuid4().hex
+    state = FullAuditState(
+        audit_id=audit_id,
+        url=safe_url,
+        status=ScanStatus.QUEUED,
+        started_at=time.time(),
+    )
+    full_audit_store[audit_id] = state
+
+    background_tasks.add_task(execute_full_audit, audit_id, safe_url)
+
+    return {"audit_id": audit_id, "status": ScanStatus.QUEUED}
+
+@app.get("/api/audit/full/{audit_id}", response_model=FullAuditState)
+async def get_full_audit(audit_id: str):
+    state = full_audit_store.get(audit_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Audit ID not found")
+    return state
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
