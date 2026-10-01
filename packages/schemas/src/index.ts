@@ -51,6 +51,8 @@ export type DetectionMethod =
 // ─── Price Component & Journey ───────────────────────────────────────────────
 
 export type PriceState = "product" | "cart" | "checkout" | "payment" | "unknown";
+export type DarkPatternAssessmentStatus = "DETECTED" | "POTENTIAL_SIGNAL" | "EVALUATED_CLEAN" | "INCONCLUSIVE";
+export type ActionPolicyTier = "SAFE" | "CAUTION" | "BLOCKED";
 
 export interface PriceComponent {
   component_type: string;     // subtotal, delivery, platform_fee, convenience_fee, insurance, donation, discount, unknown
@@ -58,6 +60,25 @@ export interface PriceComponent {
   amount: number;
   is_mandatory: boolean;
   disclosed_early: boolean;
+  added_in_stage?: string;    // "product", "cart", "checkout"
+}
+
+export interface PriceComponentExplanation {
+  component_type: string;
+  label: string;
+  amount: number;
+  is_mandatory: boolean;
+  disclosure_stage: string;
+  disclosed_early: boolean;
+  assessment_status: DarkPatternAssessmentStatus;
+  assessment_reason: string;
+}
+
+export interface PriceDelta {
+  from_stage: string;
+  to_stage: string;
+  amount_delta: number;
+  percentage_delta: number;
 }
 
 export interface PriceStage {
@@ -72,14 +93,37 @@ export interface PriceStage {
 
 export interface PriceJourney {
   stages: PriceStage[];
-  initial_price: number;
-  final_observed_price: number;
-  delta_total: number;
+  initial_price: number;         // P0
+  cart_price?: number;           // P1
+  final_observed_price: number;  // P2
+
+  // Mathematical Deltas
+  delta_01?: number;             // P1 - P0
+  delta_12?: number;             // P2 - P1
+  delta_total: number;           // P2 - P0
   percentage_increase: number;
+
+  // Price Change Explanations (What caused it)
+  component_explanations?: PriceComponentExplanation[];
   new_charges: PriceComponent[];
+
+  // Dark-Pattern Assessment (Did deceptive presentation occur?)
+  dark_pattern_assessment?: DarkPatternAssessmentStatus;
   is_drip_pricing: boolean;
+  potential_drip?: boolean;
   checkout_reached: boolean;
   explanation?: string;
+}
+
+// ─── Contextual Action Classification ───────────────────────────────────────
+
+export interface ActionClassification {
+  text: string;
+  action_tier: ActionPolicyTier;
+  reason: string;
+  target_url?: string;
+  form_action?: string;
+  is_payment_context: boolean;
 }
 
 // Legacy aliases
@@ -165,14 +209,17 @@ export interface Finding {
 
 // ─── Risk Assessment & Coverage ─────────────────────────────────────────────
 
+export type RiskLevel = "UNDETERMINED" | "LOW" | "ELEVATED" | "HIGH";
+
 export interface RiskAssessment {
-  risk_level: "LOW" | "ELEVATED" | "HIGH";
+  risk_level: RiskLevel;
   risk_score: number;                   // 0-100 where higher = higher risk
   checks_performed: number;
   signals_found: number;
   high_confidence_count: number;
   medium_confidence_count: number;
   low_confidence_count: number;
+  coverage_sufficient: boolean;
   summary: string;
 }
 

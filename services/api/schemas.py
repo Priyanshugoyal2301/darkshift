@@ -79,12 +79,46 @@ class PriceState(str, Enum):
 
 # ─── Price Component & Journey Models ────────────────────────────────────────
 
+class DarkPatternAssessmentStatus(str, Enum):
+    DETECTED = "DETECTED"
+    POTENTIAL_SIGNAL = "POTENTIAL_SIGNAL"
+    EVALUATED_CLEAN = "EVALUATED_CLEAN"
+    INCONCLUSIVE = "INCONCLUSIVE"
+
+
+class ActionPolicyTier(str, Enum):
+    SAFE = "SAFE"
+    CAUTION = "CAUTION"
+    BLOCKED = "BLOCKED"
+
+
+class ActionClassification(BaseModel):
+    text: str
+    action_tier: ActionPolicyTier
+    reason: str
+    target_url: Optional[str] = None
+    form_action: Optional[str] = None
+    is_payment_context: bool = False
+
+
 class PriceComponent(BaseModel):
     component_type: str = "unknown"  # subtotal, delivery, platform_fee, convenience_fee, insurance, donation, discount, unknown
     label: str
     amount: float
     is_mandatory: bool = True
     disclosed_early: bool = False
+    added_in_stage: Optional[str] = None
+
+
+class PriceComponentExplanation(BaseModel):
+    component_type: str
+    label: str
+    amount: float
+    is_mandatory: bool
+    disclosure_stage: str
+    disclosed_early: bool = False
+    assessment_status: DarkPatternAssessmentStatus = DarkPatternAssessmentStatus.EVALUATED_CLEAN
+    assessment_reason: str = "Standard disclosed charge."
 
 
 class PriceStage(BaseModel):
@@ -100,11 +134,23 @@ class PriceStage(BaseModel):
 class PriceJourney(BaseModel):
     stages: list[PriceStage] = []
     initial_price: float = 0.0
+    cart_price: Optional[float] = None
     final_observed_price: float = 0.0
+
+    # Mathematical Deltas
+    delta_01: Optional[float] = None
+    delta_12: Optional[float] = None
     delta_total: float = 0.0
     percentage_increase: float = 0.0
+
+    # Explanations (What caused it)
+    component_explanations: list[PriceComponentExplanation] = []
     new_charges: list[PriceComponent] = []
+
+    # Dark-Pattern Assessment (Did deceptive concealment occur?)
+    dark_pattern_assessment: DarkPatternAssessmentStatus = DarkPatternAssessmentStatus.EVALUATED_CLEAN
     is_drip_pricing: bool = False
+    potential_drip: bool = False  # Legacy backward compatibility alias
     checkout_reached: bool = False
     explanation: Optional[str] = None
 
@@ -191,13 +237,14 @@ class Finding(BaseModel):
 # ─── Risk Assessment & Coverage Models ───────────────────────────────────────
 
 class RiskAssessment(BaseModel):
-    risk_level: str = "LOW"                # "LOW", "ELEVATED", "HIGH"
+    risk_level: str = "UNDETERMINED"       # "UNDETERMINED", "LOW", "ELEVATED", "HIGH"
     risk_score: int = 0                    # 0 to 100 where higher = higher risk
     checks_performed: int = 14
     signals_found: int = 0
     high_confidence_count: int = 0
     medium_confidence_count: int = 0
     low_confidence_count: int = 0
+    coverage_sufficient: bool = True
     summary: str = "No critical dark pattern indicators observed on evaluated stages."
 
 
@@ -239,7 +286,7 @@ class TransparencyScore(BaseModel):
     deductions: list[ScoreDeduction] = []
     disclaimer: str = (
         "DarkShield Transparency Score is a secondary product metric, "
-        "not an official CCPA compliance certificate."
+        "not an official CCPA compliance score or certificate."
     )
 
 

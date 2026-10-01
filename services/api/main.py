@@ -13,6 +13,7 @@ Capabilities:
 """
 
 from __future__ import annotations
+import sys
 import base64
 import time
 import uuid
@@ -20,6 +21,12 @@ import re
 import ipaddress
 import socket
 import os
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 from typing import Optional
@@ -39,12 +46,13 @@ from schemas import (
     DOMEvidence, VisualProminenceScore, BoundingBox,
     AuditLogEntry, TargetMetadata,
     ConfidenceTier, CoverageStatus, RiskAssessment, ScanCoverage,
-    PatternCoverageItem, PriceComponent, PriceStage
+    PatternCoverageItem, PriceComponent, PriceStage, ActionPolicyTier,
 )
 from detection_engine import (
     analyze_page, compute_transparency_score, extract_prices_from_text,
     classify_page_state, PATTERN_META,
-    compute_risk_assessment, compute_scan_coverage, extract_price_components
+    compute_risk_assessment, compute_scan_coverage, extract_price_components,
+    assess_price_journey, classify_action_element,
 )
 
 
@@ -266,118 +274,239 @@ async def execute_live_scan(scan_id: str, url: str) -> None:
             target_meta.forms_count = await page.evaluate("() => document.forms.length")
             target_meta.inputs_count = await page.evaluate("() => document.querySelectorAll('input').length")
 
-            # ── STAGE 2: SAFE ADD TO CART INTERACTION ────────────────────────
-            logs.append(AuditLogEntry(timestamp=format_ts(), stage="SAFE_ACTION", message="Scanning DOM for safe 'Add to Cart' or 'Add to Bag' triggers..."))
+            # ── STAGE 2: CONTEXTUAL ACTION POLICY & CART INTERACTION ────────
+            logs.append(AuditLogEntry(
+                timestamp=format_ts(),
+                stage="ACTION_POLICY_SCAN",
+                message="Scanning DOM for interactive action candidates (evaluating text, form, tag, href)..."
+            ))
 
-            # Safe action classifier: Look for Add to Cart
-            add_cart_btn = await page.query_selector(
-                "button:has-text('Add to Cart'), button:has-text('Add to Bag'), button:has-text('Add to Basket'), "
-                "[id*='add-to-cart'], [id*='book-flight'], [class*='add-to-cart'], input[value*='Add to Cart'], "
-                "button:has-text('Book Now'), button:has-text('Enroll')"
-            )
+            # Query all interactive candidates with DOM & form context
+            candidate_data = await page.evaluate("""() => {
+                const list = [];
+                const els = document.querySelectorAll('button, a, input[type="submit"], input[type="button"], [role="button"]');
+                els.forEach((el, index) => {
+                    const text = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
+                    if (!text || text.length > 80) return;
+                    const form = el.closest('form');
+                    const formAction = form ? (form.getAttribute('action') || '') : '';
+                    const formInputs = form ? Array.from(form.querySelectorAll('input, select, textarea')).map(i => i.name || i.type || i.placeholder || '') : [];
+                    const isVisible = !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+                    if (!isVisible) return;
+                    
+                    list.push({
+                        index: index,
+                        text: text,
+                        tag: el.tagName.toLowerCase(),
+                        href: el.getAttribute('href') || '',
+                        type: el.getAttribute('type') || '',
+                        form_action: formAction,
+                        form_inputs: formInputs,
+                        id: el.id || '',
+                        className: el.className || ''
+                    });
+                });
+                return list;
+            }""")
 
-            if add_cart_btn:
-                logs.append(AuditLogEntry(timestamp=format_ts(), stage="ACTION_CLICK", message="Safe action approved: Clicking 'Add to Cart' / 'Book Now'..."))
+            # Classify all candidates contextually
+            classified_candidates = []
+            for c in candidate_data:
+                decision = classify_action_element(
+                    text=c["text"],
+                    tag=c["tag"],
+                    attributes={"href": c["href"], "type": c["type"]},
+                    form_context={"action": c["form_action"], "inputs": c["form_inputs"]},
+                    current_stage="product"
+                )
+                classified_candidates.append((c, decision))
+
+            # Select safest candidate to advance to cart
+            safe_c = next((item for item in classified_candidates if item[1].action_tier == ActionPolicyTier.SAFE), None)
+            if not safe_c:
+                # Fallback to CAUTION candidate without payment context (e.g. "Book Now" / "Enroll" on listing)
+                safe_c = next((item for item in classified_candidates if item[1].action_tier == ActionPolicyTier.CAUTION and not item[1].is_payment_context), None)
+
+            if safe_c:
+                c_data, c_decision = safe_c
+                logs.append(AuditLogEntry(
+                    timestamp=format_ts(),
+                    stage="ACTION_POLICY_APPROVE",
+                    message=f"Action classified as {c_decision.action_tier}: '{c_decision.text}' ({c_decision.reason}). Executing click..."
+                ))
+
                 try:
-                    await add_cart_btn.click()
-                    await page.wait_for_timeout(2500)
+                    # Select element via querySelector matching text or id
+                    if c_data.get("id"):
+                        btn_el = await page.query_selector(f"#{c_data['id']}")
+                    else:
+                        all_clickable = await page.query_selector_all('button, a, input[type="submit"], input[type="button"], [role="button"]')
+                        idx = c_data.get("index", 0)
+                        btn_el = all_clickable[idx] if idx < len(all_clickable) else None
 
-                    # Check if reached Cart
-                    cart_url = page.url
-                    html_p1 = await page.content()
-                    text_p1 = await page.evaluate("() => document.body.innerText")
-                    p1, c1 = extract_price_components(html_p1, text_p1)
-
-                    if p1 == 0.0 and p0 > 0.0:
-                        p1 = p0
-
-                    stages_scanned.append("cart")
-
-                    # Stage 2 screenshot
-                    ss_cart = None
-                    try:
-                        cart_ss_bytes = await page.screenshot(type="jpeg", quality=50)
-                        ss_cart = "data:image/jpeg;base64," + base64.b64encode(cart_ss_bytes).decode("utf-8")
-                    except Exception:
-                        pass
-
-                    price_stages.append(PriceStage(
-                        stage="cart",
-                        stage_label="2. Cart Review",
-                        total=p1,
-                        components=c1,
-                        url=cart_url,
-                        screenshot_b64=ss_cart
-                    ))
-
-                    logs.append(AuditLogEntry(
-                        timestamp=format_ts(),
-                        stage="STAGE_2_CAPTURED",
-                        message=f"Cart review reached: P1: ₹{p1:,.0f} (Δ: +₹{p1 - p0:,.0f})"
-                    ))
-
-                    # Run detection rules on Cart page
-                    f_stage2, _ = analyze_page(cart_url, html_p1, text_p1)
-                    all_findings.extend(f_stage2)
-
-                    # ── STAGE 3: PROCEED TO CHECKOUT ─────────────────────────
-                    checkout_btn = await page.query_selector(
-                        "button:has-text('Proceed to Checkout'), a:has-text('Proceed to Checkout'), "
-                        "[id*='proceed-checkout'], [class*='checkout-btn'], button:has-text('Continue Booking')"
-                    )
-
-                    if checkout_btn:
-                        logs.append(AuditLogEntry(timestamp=format_ts(), stage="ACTION_CLICK", message="Navigating to Checkout Review..."))
-                        await checkout_btn.click()
+                    if btn_el:
+                        await btn_el.click()
                         await page.wait_for_timeout(2500)
 
-                        co_url = page.url
-                        html_p2 = await page.content()
-                        text_p2 = await page.evaluate("() => document.body.innerText")
+                        # Check if reached Cart
+                        cart_url = page.url
+                        html_p1 = await page.content()
+                        text_p1 = await page.evaluate("() => document.body.innerText")
+                        p1, c1 = extract_price_components(html_p1, text_p1)
 
-                        # Check if authentication barrier
-                        if any(k in text_p2.lower() for k in ["enter password", "sign in with", "otp"]):
-                            logs.append(AuditLogEntry(timestamp=format_ts(), stage="CHECKOUT_BARRIER", message="Authentication barrier encountered. Stopped before credential entry."))
-                        else:
-                            p2, c2 = extract_price_components(html_p2, text_p2)
-                            if p2 == 0.0:
-                                p2 = p1
+                        if p1 == 0.0 and p0 > 0.0:
+                            p1 = p0
 
-                            stages_scanned.append("checkout")
-                            checkout_reached = True
+                        stages_scanned.append("cart")
 
-                            # Stage 3 screenshot
-                            ss_co = None
-                            try:
-                                co_ss_bytes = await page.screenshot(type="jpeg", quality=50)
-                                ss_co = "data:image/jpeg;base64," + base64.b64encode(co_ss_bytes).decode("utf-8")
-                            except Exception:
-                                pass
+                        # Stage 2 screenshot
+                        ss_cart = None
+                        try:
+                            cart_ss_bytes = await page.screenshot(type="jpeg", quality=50)
+                            ss_cart = "data:image/jpeg;base64," + base64.b64encode(cart_ss_bytes).decode("utf-8")
+                        except Exception:
+                            pass
 
-                            price_stages.append(PriceStage(
-                                stage="checkout",
-                                stage_label="3. Checkout Review",
-                                total=p2,
-                                components=c2,
-                                url=co_url,
-                                screenshot_b64=ss_co
-                            ))
+                        price_stages.append(PriceStage(
+                            stage="cart",
+                            stage_label="2. Cart Review",
+                            total=p1,
+                            components=c1,
+                            url=cart_url,
+                            screenshot_b64=ss_cart
+                        ))
 
+                        logs.append(AuditLogEntry(
+                            timestamp=format_ts(),
+                            stage="STAGE_2_CAPTURED",
+                            message=f"Cart review reached: P1: ₹{p1:,.0f} (Δ01: +₹{p1 - p0:,.0f})"
+                        ))
+
+                        # Run detection rules on Cart page
+                        f_stage2, _ = analyze_page(cart_url, html_p1, text_p1)
+                        all_findings.extend(f_stage2)
+
+                        # ── STAGE 3: CONTEXTUAL PROCEED TO CHECKOUT ───────────────
+                        co_candidate_data = await page.evaluate("""() => {
+                            const list = [];
+                            const els = document.querySelectorAll('button, a, input[type="submit"], [role="button"]');
+                            els.forEach((el, index) => {
+                                const text = (el.innerText || el.value || '').trim();
+                                if (!text || text.length > 80) return;
+                                const form = el.closest('form');
+                                const formAction = form ? (form.getAttribute('action') || '') : '';
+                                const formInputs = form ? Array.from(form.querySelectorAll('input')).map(i => i.name || i.type || '') : [];
+                                if (el.offsetWidth || el.offsetHeight) {
+                                    list.push({ index: index, text: text, tag: el.tagName.toLowerCase(), id: el.id || '', form_action: formAction, form_inputs: formInputs });
+                                }
+                            });
+                            return list;
+                        }""")
+
+                        co_target = None
+                        for cand in co_candidate_data:
+                            dec = classify_action_element(
+                                text=cand["text"],
+                                tag=cand["tag"],
+                                form_context={"action": cand["form_action"], "inputs": cand["form_inputs"]},
+                                current_stage="cart"
+                            )
+                            if dec.action_tier == ActionPolicyTier.CAUTION and not dec.is_payment_context:
+                                co_target = (cand, dec)
+                                break
+                            elif dec.action_tier == ActionPolicyTier.BLOCKED:
+                                logs.append(AuditLogEntry(
+                                    timestamp=format_ts(),
+                                    stage="POLICY_BLOCKED",
+                                    message=f"Element '{dec.text}' classified as BLOCKED ({dec.reason}). Avoided."
+                                ))
+
+                        if co_target:
+                            t_cand, t_dec = co_target
                             logs.append(AuditLogEntry(
                                 timestamp=format_ts(),
-                                stage="STAGE_3_CAPTURED",
-                                message=f"Final checkout observed: P2: ₹{p2:,.0f} (Total Δ: +₹{p2 - p0:,.0f})"
+                                stage="ACTION_CLICK",
+                                message=f"Navigating to Checkout Review via '{t_dec.text}'..."
                             ))
 
-                            f_stage3, _ = analyze_page(co_url, html_p2, text_p2)
-                            all_findings.extend(f_stage3)
+                            if t_cand.get("id"):
+                                checkout_btn = await page.query_selector(f"#{t_cand['id']}")
+                            else:
+                                all_co_clickable = await page.query_selector_all('button, a, input[type="submit"], [role="button"]')
+                                c_idx = t_cand.get("index", 0)
+                                checkout_btn = all_co_clickable[c_idx] if c_idx < len(all_co_clickable) else None
+
+                            if checkout_btn:
+                                await checkout_btn.click()
+                                await page.wait_for_timeout(2500)
+
+                                co_url = page.url
+                                html_p2 = await page.content()
+                                text_p2 = await page.evaluate("() => document.body.innerText")
+
+                                # Check if authentication barrier
+                                if any(k in text_p2.lower() for k in ["enter password", "sign in with", "otp"]):
+                                    logs.append(AuditLogEntry(
+                                        timestamp=format_ts(),
+                                        stage="CHECKOUT_BARRIER",
+                                        message="Authentication barrier encountered. Stopped before credential entry."
+                                    ))
+                                else:
+                                    p2, c2 = extract_price_components(html_p2, text_p2)
+                                    if p2 == 0.0:
+                                        p2 = p1
+
+                                    stages_scanned.append("checkout")
+                                    checkout_reached = True
+
+                                    # Stage 3 screenshot
+                                    ss_co = None
+                                    try:
+                                        co_ss_bytes = await page.screenshot(type="jpeg", quality=50)
+                                        ss_co = "data:image/jpeg;base64," + base64.b64encode(co_ss_bytes).decode("utf-8")
+                                    except Exception:
+                                        pass
+
+                                    price_stages.append(PriceStage(
+                                        stage="checkout",
+                                        stage_label="3. Checkout Review",
+                                        total=p2,
+                                        components=c2,
+                                        url=co_url,
+                                        screenshot_b64=ss_co
+                                    ))
+
+                                    logs.append(AuditLogEntry(
+                                        timestamp=format_ts(),
+                                        stage="STAGE_3_CAPTURED",
+                                        message=f"Final checkout observed: P2: ₹{p2:,.0f} (Total Δ: +₹{p2 - p0:,.0f})"
+                                    ))
+
+                                    f_stage3, _ = analyze_page(co_url, html_p2, text_p2)
+                                    all_findings.extend(f_stage3)
+
+                                    # Check for terminal payment trigger and enforce safety boundary
+                                    payment_check = await page.evaluate("""() => {
+                                        const btns = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+                                        return btns.map(b => (b.innerText || b.value || '').trim()).filter(t => /pay|order|purchase/i.test(t));
+                                    }""")
+                                    if payment_check:
+                                        logs.append(AuditLogEntry(
+                                            timestamp=format_ts(),
+                                            stage="POLICY_TERMINATION",
+                                            message=f"Terminal payment trigger detected: '{payment_check[0]}'. Crawl safely stopped before transaction execution."
+                                        ))
 
                 except Exception as click_e:
-                    logs.append(AuditLogEntry(timestamp=format_ts(), stage="ACTION_NOTICE", message=f"Cart interaction notice: {str(click_e)[:80]}"))
+                    logs.append(AuditLogEntry(timestamp=format_ts(), stage="ACTION_NOTICE", message=f"Action interaction notice: {str(click_e)[:80]}"))
             else:
-                logs.append(AuditLogEntry(timestamp=format_ts(), stage="CRAWL_BOUNDARY", message="Single-page audit completed (no safe 'Add to Cart' trigger identified)."))
+                logs.append(AuditLogEntry(timestamp=format_ts(), stage="CRAWL_BOUNDARY", message="Single-page audit completed (no safe action candidate identified without payment commitment)."))
 
             await browser.close()
+
+        # Assess Price Journey (Separating Delta vs Explanation vs Dark Pattern)
+        price_journey, journey_findings = assess_price_journey(price_stages, stages_scanned)
+        all_findings.extend(journey_findings)
 
         # Deduplicate findings by rule & pattern
         seen_keys = set()
@@ -388,67 +517,8 @@ async def execute_live_scan(scan_id: str, url: str) -> None:
                 seen_keys.add(key)
                 deduped_findings.append(f)
 
-        # Build PriceJourney
-        initial_p = price_stages[0].total if price_stages else 0.0
-        final_p = price_stages[-1].total if price_stages else initial_p
-        delta = max(0.0, final_p - initial_p)
-        pct = round((delta / initial_p) * 100, 1) if initial_p > 0 else 0.0
-
-        all_components = []
-        for s in price_stages[1:]:
-            all_components.extend(s.components)
-
-        is_drip = delta > 0 and len(price_stages) > 1
-
-        # If components don't cover full delta, add the unexplained remainder
-        comp_sum = sum(c.amount for c in all_components)
-        if delta > comp_sum and delta > 0:
-            diff = delta - comp_sum
-            all_components.append(PriceComponent(
-                component_type="mandatory_fee",
-                label="Late Stage Mandatory Price Escalation",
-                amount=diff,
-                is_mandatory=True,
-                disclosed_early=False
-            ))
-
-        price_journey = PriceJourney(
-            stages=price_stages,
-            initial_price=initial_p,
-            final_observed_price=final_p,
-            delta_total=delta,
-            percentage_increase=pct,
-            new_charges=all_components,
-            is_drip_pricing=is_drip,
-            checkout_reached=checkout_reached,
-            explanation=(
-                f"Initial advertised price was ₹{initial_p:,.0f}. "
-                + (f"Final observed payable amount increased by ₹{delta:,.0f} (+{pct}%) across purchase journey." if delta > 0 else "No price inflation observed across evaluated stages.")
-            )
-        )
-
-        # If Drip Pricing confirmed across multi-stage journey, ensure finding exists
-        if is_drip and not any(f.pattern == CCPAPattern.DRIP_PRICING for f in deduped_findings):
-            deduped_findings.append(Finding(
-                pattern=CCPAPattern.DRIP_PRICING,
-                confidence=0.95,
-                confidence_tier=ConfidenceTier.HIGH,
-                evidence_sources=["PRICE_STATE_DIFF", "STAGE_JOURNEY_AUDIT"],
-                severity=Severity.HIGH,
-                url=url,
-                page_state=PriceState.CHECKOUT,
-                ccpa_category=CCPAPattern.DRIP_PRICING,
-                ccpa_regulation="CCPA_2023_SEC_5_7",
-                title=f"Drip Pricing: ₹{delta:,.0f} (+{pct}%) Added After Initial Listing",
-                explanation=f"Initial advertised price of ₹{initial_p:,.0f} increased to ₹{final_p:,.0f} at checkout due to unadvertised mandatory additions.",
-                consumer_advice="Inspect every line item before payment. Mandatory convenience or platform fees must be disclosed upfront under CCPA 2023.",
-                remediation_hint="Incorporate all mandatory surcharges into initial advertised prices.",
-                text_snippets=[f"Initial: ₹{initial_p:,.0f}", f"Checkout: ₹{final_p:,.0f}", f"Delta: +₹{delta:,.0f}"],
-                detection_methods=[DetectionMethod.PRICE_JOURNEY]
-            ))
-
         # Honest Risk Assessment & Scan Coverage
-        risk_assessment = compute_risk_assessment(deduped_findings, checks_performed=14)
+        risk_assessment = compute_risk_assessment(deduped_findings, stages_scanned=stages_scanned, checks_performed=14)
         scan_coverage = compute_scan_coverage(stages_scanned, deduped_findings)
         transparency_score = compute_transparency_score(deduped_findings)
 
@@ -495,8 +565,7 @@ async def execute_live_scan(scan_id: str, url: str) -> None:
             soup = BeautifulSoup(html, "html.parser")
             text = soup.get_text(separator=" ", strip=True)
             findings, _ = analyze_page(final_url, html, text)
-
-            risk_assessment = compute_risk_assessment(findings)
+            risk_assessment = compute_risk_assessment(findings, stages_scanned=["product"], checks_performed=14)
             scan_coverage = compute_scan_coverage(["product"], findings)
             transparency_score = compute_transparency_score(findings)
 
