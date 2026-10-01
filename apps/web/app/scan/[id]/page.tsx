@@ -50,14 +50,28 @@ interface PriceStage {
   screenshot_b64?: string;
 }
 
+interface PriceComponentExplanation {
+  label: string;
+  amount: number;
+  category: string;
+  stage_added: string;
+  reason: string;
+}
+
 interface PriceJourney {
   stages: PriceStage[];
   initial_price: number;
+  cart_price?: number;
   final_observed_price: number;
+  delta_01?: number;
+  delta_12?: number;
   delta_total: number;
   percentage_increase: number;
+  component_explanations?: PriceComponentExplanation[];
   new_charges: PriceComponent[];
+  dark_pattern_assessment?: "DETECTED" | "POTENTIAL_SIGNAL" | "EVALUATED_CLEAN" | "INCONCLUSIVE";
   is_drip_pricing: boolean;
+  potential_drip?: boolean;
   checkout_reached: boolean;
   explanation?: string;
 }
@@ -105,13 +119,14 @@ interface TransparencyScore {
 }
 
 interface RiskAssessment {
-  risk_level: "LOW" | "ELEVATED" | "HIGH";
+  risk_level: "UNDETERMINED" | "LOW" | "ELEVATED" | "HIGH";
   risk_score: number;
   checks_performed: number;
   signals_found: number;
   high_confidence_count: number;
   medium_confidence_count: number;
   low_confidence_count: number;
+  coverage_sufficient?: boolean;
   summary: string;
 }
 
@@ -244,6 +259,15 @@ export default function DualModeAuditPage({
           badgeBg: "bg-amber-900/60",
           indicator: "bg-amber-500",
         };
+      case "UNDETERMINED":
+        return {
+          bg: "bg-slate-900/70",
+          border: "border-slate-700",
+          text: "text-slate-300",
+          badgeBg: "bg-slate-800",
+          indicator: "bg-slate-400",
+        };
+      case "LOW":
       default:
         return {
           bg: "bg-emerald-950/30",
@@ -381,6 +405,127 @@ export default function DualModeAuditPage({
                 <div className="p-3 rounded-lg bg-[#090d16] border border-slate-800 flex items-center justify-between">
                   <span className="text-slate-400">High-Confidence Violations</span>
                   <span className="font-bold text-rose-400 text-sm">{risk.high_confidence_count}</span>
+                </div>
+              </div>
+
+              {/* 4-Question Consumer Hierarchy */}
+              <div className="space-y-4 pt-2">
+                {/* ① IS THERE A PROBLEM? */}
+                <div className={`p-4 rounded-lg border ${riskTheme.bg} ${riskTheme.border} space-y-1.5`}>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs px-2 py-0.5 rounded bg-black/40 border border-slate-700 text-slate-200 font-bold">
+                      ① IS THERE A PROBLEM?
+                    </span>
+                    <span className={`text-xs font-bold font-mono tracking-wide ${riskTheme.text}`}>
+                      {risk.risk_level} RISK
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-200 leading-relaxed">
+                    {risk.risk_level === "UNDETERMINED" && (
+                      "Insufficient journey coverage: DarkShield crawled the accessible product page but checkout review could not be reached. Because late-stage convenience fees or pre-selected add-ons cannot be inspected, this page cannot be verified as safe."
+                    )}
+                    {risk.risk_level === "HIGH" && (
+                      `${risk.high_confidence_count} high-confidence potential dark-pattern signals were verified against India's CCPA 2023 Guidelines. High likelihood of deceptive consumer friction.`
+                    )}
+                    {risk.risk_level === "ELEVATED" && (
+                      `${risk.signals_found} potential dark-pattern signals identified that warrant consumer vigilance.`
+                    )}
+                    {risk.risk_level === "LOW" && (
+                      "Evaluated Clean: No deceptive patterns were identified across the verified stages of the purchase journey."
+                    )}
+                  </p>
+                </div>
+
+                {/* ② WHAT HAPPENED? */}
+                <div className="p-4 rounded-lg bg-[#090d16] border border-slate-800 space-y-2.5">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <span className="font-mono text-xs px-2 py-0.5 rounded bg-purple-950/80 border border-purple-800 text-purple-300 font-bold">
+                      ② WHAT HAPPENED?
+                    </span>
+                    {journey && journey.delta_total > 0 && (
+                      <span className="text-xs font-mono font-bold text-rose-400">
+                        +₹{journey.delta_total.toLocaleString()} total escalation (+{journey.percentage_increase}%)
+                      </span>
+                    )}
+                  </div>
+                  {journey && stages.length > 0 ? (
+                    <div className="flex flex-col sm:flex-row items-center gap-2 font-mono text-xs">
+                      <div className="p-2.5 rounded bg-[#0e1422] border border-slate-800 flex-1 text-center w-full">
+                        <div className="text-[10px] text-slate-400">Advertised (P0)</div>
+                        <div className="text-base font-bold text-white">₹{journey.initial_price.toLocaleString()}</div>
+                      </div>
+                      <span className="text-slate-500 font-bold">→</span>
+                      <div className="p-2.5 rounded bg-[#0e1422] border border-slate-800 flex-1 text-center w-full">
+                        <div className="text-[10px] text-slate-400">In Cart (P1)</div>
+                        <div className="text-base font-bold text-white">
+                          {journey.cart_price ? `₹${journey.cart_price.toLocaleString()}` : "—"}
+                        </div>
+                        {journey.delta_01 ? (
+                          <div className="text-[10px] text-rose-400 font-semibold">+₹{journey.delta_01.toLocaleString()}</div>
+                        ) : null}
+                      </div>
+                      <span className="text-slate-500 font-bold">→</span>
+                      <div className={`p-2.5 rounded border flex-1 text-center w-full ${journey.delta_total > 0 ? 'bg-rose-950/20 border-rose-800' : 'bg-[#0e1422] border-slate-800'}`}>
+                        <div className="text-[10px] text-slate-400">At Checkout (P2)</div>
+                        <div className="text-base font-bold text-white">₹{journey.final_observed_price.toLocaleString()}</div>
+                        {journey.delta_12 ? (
+                          <div className="text-[10px] text-rose-400 font-semibold">+₹{journey.delta_12.toLocaleString()}</div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400 font-mono">
+                      Single page audited; full checkout journey not initiated.
+                    </p>
+                  )}
+                </div>
+
+                {/* ③ WHY DID IT CHANGE? */}
+                <div className="p-4 rounded-lg bg-[#090d16] border border-slate-800 space-y-2.5">
+                  <span className="font-mono text-xs px-2 py-0.5 rounded bg-amber-950/80 border border-amber-800 text-amber-300 font-bold">
+                    ③ WHY DID IT CHANGE?
+                  </span>
+                  {journey?.component_explanations && journey.component_explanations.length > 0 ? (
+                    <div className="space-y-1.5">
+                      {journey.component_explanations.map((exp, eIdx) => (
+                        <div key={eIdx} className="p-2.5 rounded bg-[#0e1422] border border-slate-800 flex items-center justify-between text-xs font-mono">
+                          <div>
+                            <span className="text-white font-bold">{exp.label}</span>
+                            <span className="text-slate-400 ml-2">({exp.reason} · stage: {exp.stage_added})</span>
+                          </div>
+                          <span className="text-rose-400 font-bold">+₹{exp.amount.toLocaleString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-300 leading-relaxed font-mono">
+                      {journey?.explanation || "No hidden fees or unexpected line-item additions were detected."}
+                    </p>
+                  )}
+                </div>
+
+                {/* ④ WHAT SHOULD YOU DO? */}
+                <div className="p-4 rounded-lg bg-blue-950/20 border border-blue-900/50 space-y-2">
+                  <span className="font-mono text-xs px-2 py-0.5 rounded bg-blue-900/60 border border-blue-700 text-blue-200 font-bold">
+                    ④ WHAT SHOULD YOU DO?
+                  </span>
+                  <ul className="text-xs text-slate-200 space-y-1 list-disc list-inside">
+                    {risk.risk_level === "UNDETERMINED" && (
+                      <li>Manually inspect the cart and checkout summary before submitting payment details.</li>
+                    )}
+                    {journey && journey.delta_total > 0 && (
+                      <li>Verify the +₹{journey.delta_total.toLocaleString()} price increase before completing checkout.</li>
+                    )}
+                    {findings.some(f => f.pattern === "BASKET_SNEAKING") && (
+                      <li>Uncheck any pre-selected insurance, donation, or warranty options.</li>
+                    )}
+                    {findings.some(f => f.pattern === "FALSE_URGENCY") && (
+                      <li>Ignore artificial countdown clocks or pressure text; take time to evaluate your purchase.</li>
+                    )}
+                    {findings.length === 0 && risk.risk_level === "LOW" && (
+                      <li>Prices and choices appear transparent under CCPA 2023 Guidelines.</li>
+                    )}
+                  </ul>
                 </div>
               </div>
             </section>
