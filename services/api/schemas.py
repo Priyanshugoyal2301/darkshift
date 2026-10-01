@@ -109,6 +109,10 @@ class PriceComponent(BaseModel):
     disclosed_early: bool = False
     added_in_stage: Optional[str] = None
     first_observed_stage: Optional[str] = None
+    first_seen_stage: Optional[str] = None
+    last_seen_stage: Optional[str] = None
+    carryover: bool = False
+    is_aggregate: bool = False
     previously_disclosed: bool = False
     selected_by_default: bool = False
     included_in_advertised_price: bool = False
@@ -154,6 +158,7 @@ class PriceJourney(BaseModel):
     # Explanations (What caused it)
     component_explanations: list[PriceComponentExplanation] = []
     new_charges: list[PriceComponent] = []
+    reconciled_carryover_note: Optional[str] = None
 
     # Dark-Pattern Assessment (Did deceptive concealment occur?)
     dark_pattern_assessment: DarkPatternAssessmentStatus = DarkPatternAssessmentStatus.EVALUATED_CLEAN
@@ -369,3 +374,17 @@ class AnalyzeRequest(BaseModel):
     visible_text: str
     prices: list[PricePoint] = []
     page_state: PriceState = PriceState.UNKNOWN
+
+
+class ScanSummary(BaseModel):
+    scan_id: str
+    url: str
+    status: ScanStatus
+    started_at: float
+    completed_at: Optional[float] = None
+    risk_level: str
+    findings_count: int
+    checkout_reached: bool
+    summary: str
+    display_name: str
+

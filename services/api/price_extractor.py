@@ -246,39 +246,52 @@ def extract_cart_checkout_price(soup: BeautifulSoup, text: str, stage: str = "ca
 
 # ─── Line-Item Component Extractor (Disclosed Fees & Add-ons) ─────────────────
 
+def find_subset_sum(target: float, items: list[float], tolerance: float = 0.5) -> Optional[list[float]]:
+    """Checks if target can be formed by the sum of 2 or more distinct items in the list."""
+    from itertools import combinations
+    target_round = round(target, 2)
+    valid_items = [round(x, 2) for x in items if 0 < x < target_round]
+    for r in range(2, len(valid_items) + 1):
+        for combo in combinations(valid_items, r):
+            if abs(sum(combo) - target_round) < tolerance:
+                return list(combo)
+    return None
+
+
+def is_base_or_total_label(text: str) -> bool:
+    """Checks if element text corresponds to base fare or a total/subtotal container."""
+    t = text.lower().strip()
+    return any(kw in t for kw in (
+        "cart subtotal", "order subtotal", "subtotal",
+        "amount payable", "payable amount", "total payable", "net payable",
+        "final total", "grand total", "order total", "final observed",
+        "base fare", "base flight fare", "base price", "base product",
+        "total fare", "total price", "flight summary", "order breakdown",
+        "item subtotal"
+    ))
+
+
+def is_aggregate_label(text: str) -> bool:
+    """Checks if element text indicates a composite container/bundle of add-ons."""
+    t = text.lower().strip()
+    return any(kw in t for kw in (
+        " & ", " and ", " + ", "add-ons", "addons", "combined",
+        "total add-ons", "taxes & fees", "charges & fees", "bundle"
+    ))
+
+
 def extract_stage_components(soup: BeautifulSoup, text: str, current_stage: str = "product") -> list[PriceComponent]:
     """
-    Extracts fee components and add-ons present on the page with accurate metadata:
-    - component_type (shipping, convenience_fee, protection, donation, tax)
-    - is_mandatory
-    - first_observed_stage
-    - is_delivery_dependent
+    Extracts atomic fee components and add-ons present on the page with accurate metadata:
+    - ATOMIC: Individual line item fees and selected add-ons.
+    - AGGREGATE: Composite containers (e.g. ₹298 Insurance & Carbon Add-ons) are filtered out via subset-sum.
+    - TOTAL: Base fares and order subtotals are filtered out.
     """
-    components: list[PriceComponent] = []
-    seen = set()
+    raw_candidates: list[PriceComponent] = []
 
-    def add(ctype: str, label: str, amt: float, mandatory: bool, delivery_dep: bool = False):
-        key = f"{ctype}-{round(amt, 2)}"
-        if key not in seen and amt > 0:
-            seen.add(key)
-            components.append(PriceComponent(
-                component_type=ctype,
-                label=label,
-                amount=round(amt, 2),
-                is_mandatory=mandatory,
-                disclosed_early=(current_stage == "product"),
-                added_in_stage=current_stage,
-                first_observed_stage=current_stage,
-                previously_disclosed=False,
-                selected_by_default=True,
-                included_in_advertised_price=False,
-                is_delivery_dependent=delivery_dep,
-            ))
-
-    # Look for checkbox add-ons in DOM
+    # 1. Look for checkbox add-ons in DOM
     for cb in soup.find_all("input", {"type": "checkbox"}):
         is_checked = cb.get("checked") is not None or cb.get("checked") == ""
-        # Get label
         label_text = ""
         cb_id = cb.get("id")
         if cb_id:
@@ -289,43 +302,192 @@ def extract_stage_components(soup: BeautifulSoup, text: str, current_stage: str 
             label_text = cb.parent.get_text(separator=" ", strip=True)
 
         if label_text:
+            if is_base_or_total_label(label_text):
+                continue
             amt = extract_inr_from_text(label_text)
-            if amt:
+            if amt and amt > 0:
                 lbl_lower = label_text.lower()
                 if any(w in lbl_lower for w in ("insurance", "warranty", "protect", "damage")):
-                    add("protection", "Optional Travel/Damage Insurance", amt, False)
+                    raw_candidates.append(PriceComponent(
+                        component_type="protection",
+                        label="Optional Travel/Damage Insurance",
+                        amount=round(amt, 2),
+                        is_mandatory=False,
+                        disclosed_early=(current_stage == "product"),
+                        added_in_stage=current_stage,
+                        first_observed_stage=current_stage,
+                        first_seen_stage=current_stage,
+                        last_seen_stage=current_stage,
+                        previously_disclosed=False,
+                        selected_by_default=is_checked,
+                        included_in_advertised_price=False,
+                        is_delivery_dependent=False,
+                    ))
                 elif any(w in lbl_lower for w in ("carbon", "donation", "charity", "foundation", "contribute")):
-                    add("donation", "Charitable / Environmental Contribution", amt, False)
+                    raw_candidates.append(PriceComponent(
+                        component_type="donation",
+                        label="Charitable / Environmental Contribution",
+                        amount=round(amt, 2),
+                        is_mandatory=False,
+                        disclosed_early=(current_stage == "product"),
+                        added_in_stage=current_stage,
+                        first_observed_stage=current_stage,
+                        first_seen_stage=current_stage,
+                        last_seen_stage=current_stage,
+                        previously_disclosed=False,
+                        selected_by_default=is_checked,
+                        included_in_advertised_price=False,
+                        is_delivery_dependent=False,
+                    ))
                 elif any(w in lbl_lower for w in ("express", "priority", "gift wrap")):
-                    add("shipping", "Priority Handling / Gift Wrap", amt, False)
+                    raw_candidates.append(PriceComponent(
+                        component_type="shipping",
+                        label="Priority Handling / Gift Wrap",
+                        amount=round(amt, 2),
+                        is_mandatory=False,
+                        disclosed_early=(current_stage == "product"),
+                        added_in_stage=current_stage,
+                        first_observed_stage=current_stage,
+                        first_seen_stage=current_stage,
+                        last_seen_stage=current_stage,
+                        previously_disclosed=False,
+                        selected_by_default=is_checked,
+                        included_in_advertised_price=False,
+                        is_delivery_dependent=False,
+                    ))
 
-    # Inspect line items in fee rows and table cells
+    # 2. Inspect line items in fee rows and table cells
     fee_elements = soup.find_all(lambda t: t.name in ("div", "tr", "p", "li") and (
-        any(c in " ".join(t.get("class", [])) for c in ("fee", "charge", "row", "item", "breakdown")) or
+        any(c in " ".join(t.get("class", [])) for c in ("fee", "charge", "row", "item", "breakdown", "late-fee")) or
         any(w in t.get_text().lower() for w in ("convenience", "platform", "delivery", "shipping", "handling", "insurance", "donation", "tax", "gst"))
     ))
 
     for el in fee_elements:
+        # Avoid double-counting elements inside a checkbox label
+        if el.find_parent("label") or el.find("input", {"type": "checkbox"}):
+            continue
+
         el_text = el.get_text(separator=" ", strip=True)
         if len(el_text) > 180:
             continue
+
+        # Rule 2: Total rows and Base fare rows are never components
+        if is_base_or_total_label(el_text):
+            continue
+
         amt = extract_inr_from_text(el_text)
-        if not amt:
+        if not amt or amt <= 0:
             continue
         el_lower = el_text.lower()
 
         if any(w in el_lower for w in ("convenience fee", "platform fee", "handling fee", "service fee", "booking fee", "gateway fee")):
-            add("convenience_fee", "Convenience / Platform Fee", amt, True)
+            raw_candidates.append(PriceComponent(
+                component_type="convenience_fee",
+                label="Convenience / Platform Fee",
+                amount=round(amt, 2),
+                is_mandatory=True,
+                disclosed_early=(current_stage == "product"),
+                added_in_stage=current_stage,
+                first_observed_stage=current_stage,
+                first_seen_stage=current_stage,
+                last_seen_stage=current_stage,
+                previously_disclosed=False,
+                selected_by_default=True,
+                included_in_advertised_price=False,
+                is_delivery_dependent=False,
+            ))
         elif any(w in el_lower for w in ("delivery", "shipping", "courier", "freight")):
-            add("shipping", "Standard Delivery Charges", amt, True, delivery_dep=True)
+            raw_candidates.append(PriceComponent(
+                component_type="shipping",
+                label="Standard Delivery Charges",
+                amount=round(amt, 2),
+                is_mandatory=True,
+                disclosed_early=(current_stage == "product"),
+                added_in_stage=current_stage,
+                first_observed_stage=current_stage,
+                first_seen_stage=current_stage,
+                last_seen_stage=current_stage,
+                previously_disclosed=False,
+                selected_by_default=True,
+                included_in_advertised_price=False,
+                is_delivery_dependent=True,
+            ))
         elif any(w in el_lower for w in ("insurance", "securetrips", "warranty")):
-            add("protection", "Insurance / Warranty Add-on", amt, False)
-        elif any(w in el_lower for w in ("carbon offset", "foundation", "donation", "green aviation")):
-            add("donation", "Carbon / Foundation Donation", amt, False)
+            raw_candidates.append(PriceComponent(
+                component_type="protection",
+                label="Insurance & Carbon Add-ons" if is_aggregate_label(el_text) else "Optional Travel/Damage Insurance",
+                amount=round(amt, 2),
+                is_mandatory=False,
+                disclosed_early=(current_stage == "product"),
+                added_in_stage=current_stage,
+                first_observed_stage=current_stage,
+                first_seen_stage=current_stage,
+                last_seen_stage=current_stage,
+                previously_disclosed=False,
+                selected_by_default=True,
+                included_in_advertised_price=False,
+                is_delivery_dependent=False,
+            ))
+        elif any(w in el_lower for w in ("carbon", "offset", "foundation", "donation", "charity", "green aviation", "climate", "environment")):
+            raw_candidates.append(PriceComponent(
+                component_type="donation",
+                label="Charitable / Environmental Contribution",
+                amount=round(amt, 2),
+                is_mandatory=False,
+                disclosed_early=(current_stage == "product"),
+                added_in_stage=current_stage,
+                first_observed_stage=current_stage,
+                first_seen_stage=current_stage,
+                last_seen_stage=current_stage,
+                previously_disclosed=False,
+                selected_by_default=True,
+                included_in_advertised_price=False,
+                is_delivery_dependent=False,
+            ))
         elif any(w in el_lower for w in ("tax", "gst", "vat")):
-            add("tax", "Taxes & Surcharges", amt, True)
+            raw_candidates.append(PriceComponent(
+                component_type="tax",
+                label="Taxes & Surcharges",
+                amount=round(amt, 2),
+                is_mandatory=True,
+                disclosed_early=(current_stage == "product"),
+                added_in_stage=current_stage,
+                first_observed_stage=current_stage,
+                first_seen_stage=current_stage,
+                last_seen_stage=current_stage,
+                previously_disclosed=False,
+                selected_by_default=True,
+                included_in_advertised_price=False,
+                is_delivery_dependent=False,
+            ))
 
-    return components
+    # 3. Deduplication and Parent/Child Aggregate Filtering within stage
+    # Step A: Deduplicate identical (component_type, amount) within the same page
+    unique_candidates: list[PriceComponent] = []
+    seen_keys = set()
+    for cand in raw_candidates:
+        key = (cand.component_type, cand.amount)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            unique_candidates.append(cand)
+
+    # Step B: Parent/Child Aggregate Detection (Rule 1 & Rule 3)
+    # If a candidate's amount equals the sum of two or more other smaller candidate components,
+    # or if its label is composite and matches a subset sum, classify it as AGGREGATE and exclude it.
+    all_amounts = [c.amount for c in unique_candidates]
+    atomic_components: list[PriceComponent] = []
+
+    for cand in unique_candidates:
+        other_amounts = [a for a in all_amounts if a < cand.amount]
+        is_agg = is_aggregate_label(cand.label)
+        subset = find_subset_sum(cand.amount, other_amounts)
+        if subset is not None or (is_agg and len(other_amounts) >= 2):
+            cand.is_aggregate = True
+            # Aggregate container total - DO NOT report as an individual fee component
+            continue
+        atomic_components.append(cand)
+
+    return atomic_components
 
 
 # ─── Unified Semantic Extractor Entry Point ───────────────────────────────────

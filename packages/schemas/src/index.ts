@@ -62,6 +62,10 @@ export interface PriceComponent {
   disclosed_early: boolean;
   added_in_stage?: string;    // "product", "cart", "checkout"
   first_observed_stage?: string;
+  first_seen_stage?: string;
+  last_seen_stage?: string;
+  carryover?: boolean;
+  is_aggregate?: boolean;
   previously_disclosed?: boolean;
   selected_by_default?: boolean;
   included_in_advertised_price?: boolean;
@@ -114,6 +118,7 @@ export interface PriceJourney {
   // Price Change Explanations (What caused it)
   component_explanations?: PriceComponentExplanation[];
   new_charges: PriceComponent[];
+  reconciled_carryover_note?: string;
 
   // Dark-Pattern Assessment (Did deceptive presentation occur?)
   dark_pattern_assessment?: DarkPatternAssessmentStatus;
@@ -343,3 +348,17 @@ export interface AnalyzeRequest {
   prices?: PricePoint[];
   page_state?: PriceState;
 }
+
+export interface ScanSummary {
+  scan_id: string;
+  url: string;
+  status: ScanStatus;
+  started_at: number;
+  completed_at?: number;
+  risk_level: string;
+  findings_count: number;
+  checkout_reached: boolean;
+  summary: string;
+  display_name: string;
+}
+

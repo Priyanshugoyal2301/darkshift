@@ -915,40 +915,37 @@ def assess_price_journey(
         pct = None
 
     explanations: list[PriceComponentExplanation] = []
-    new_charges: list[PriceComponent] = []
+    reconciled_ledger: dict[str, PriceComponent] = {}
+    reconciled_new_charges: list[PriceComponent] = []
+    carryover_charges: list[PriceComponent] = []
 
-    # Collect components from stages beyond product listing
+    # Collect components from stages beyond product listing with cross-stage reconciliation (Rule 4)
     for s in price_stages[1:]:
         for c in s.components:
-            new_charges.append(c)
-            ctype = c.component_type.lower()
-            
-            # Legitimate variable delivery charges (NOT drip pricing)
-            if c.is_delivery_dependent or ctype in ("shipping", "delivery"):
-                explanations.append(PriceComponentExplanation(
-                    component_type=c.component_type,
-                    label=c.label,
-                    amount=c.amount,
-                    is_mandatory=True,
-                    disclosure_stage=s.stage,
-                    disclosed_early=True,
-                    assessment_status=DarkPatternAssessmentStatus.EVALUATED_CLEAN,
-                    assessment_reason=f"Standard variable delivery charge (₹{c.amount:,.0f}) disclosed upon reaching {s.stage}."
-                ))
-            elif ctype in ("convenience_fee", "platform_fee", "handling_fee", "mandatory_fee"):
-                # Mandatory fee withheld from initial listing and not previously disclosed
-                if not c.previously_disclosed:
-                    explanations.append(PriceComponentExplanation(
-                        component_type=c.component_type,
-                        label=c.label,
-                        amount=c.amount,
-                        is_mandatory=True,
-                        disclosure_stage=s.stage,
-                        disclosed_early=False,
-                        assessment_status=DarkPatternAssessmentStatus.DETECTED,
-                        assessment_reason=f"Mandatory {c.label} (₹{c.amount:,.0f}) first observed at {s.stage} and not disclosed in advertised price."
-                    ))
-                else:
+            if getattr(c, "is_aggregate", False):
+                continue
+
+            comp_key = f"{c.component_type}:{round(c.amount, 2)}"
+            if comp_key in reconciled_ledger:
+                # Existing charge carried forward from an earlier stage (increment = 0)
+                existing = reconciled_ledger[comp_key]
+                existing.last_seen_stage = s.stage
+                c.first_seen_stage = existing.first_seen_stage
+                c.last_seen_stage = s.stage
+                c.carryover = True
+                carryover_charges.append(c)
+            else:
+                # Newly introduced charge at this stage
+                c.first_seen_stage = s.stage
+                c.last_seen_stage = s.stage
+                c.added_in_stage = s.stage
+                c.carryover = False
+                reconciled_ledger[comp_key] = c
+                reconciled_new_charges.append(c)
+
+                ctype = c.component_type.lower()
+                # Legitimate variable delivery charges (NOT drip pricing)
+                if c.is_delivery_dependent or ctype in ("shipping", "delivery"):
                     explanations.append(PriceComponentExplanation(
                         component_type=c.component_type,
                         label=c.label,
@@ -957,43 +954,90 @@ def assess_price_journey(
                         disclosure_stage=s.stage,
                         disclosed_early=True,
                         assessment_status=DarkPatternAssessmentStatus.EVALUATED_CLEAN,
-                        assessment_reason=f"Disclosed {c.label} (₹{c.amount:,.0f}) itemized at {s.stage}."
+                        assessment_reason=f"Standard variable delivery charge (₹{c.amount:,.0f}) disclosed upon reaching {s.stage}."
                     ))
-            elif ctype in ("protection", "insurance", "donation", "charity"):
-                # Optional add-ons
-                if c.selected_by_default:
-                    explanations.append(PriceComponentExplanation(
-                        component_type=c.component_type,
-                        label=c.label,
-                        amount=c.amount,
-                        is_mandatory=False,
-                        disclosure_stage=s.stage,
-                        disclosed_early=False,
-                        assessment_status=DarkPatternAssessmentStatus.POTENTIAL_SIGNAL,
-                        assessment_reason=f"Pre-selected optional {c.label} (₹{c.amount:,.0f}) added at {s.stage}."
-                    ))
+                elif ctype in ("convenience_fee", "platform_fee", "handling_fee", "mandatory_fee"):
+                    # Mandatory fee withheld from initial listing and not previously disclosed
+                    if not c.previously_disclosed:
+                        explanations.append(PriceComponentExplanation(
+                            component_type=c.component_type,
+                            label=c.label,
+                            amount=c.amount,
+                            is_mandatory=True,
+                            disclosure_stage=s.stage,
+                            disclosed_early=False,
+                            assessment_status=DarkPatternAssessmentStatus.DETECTED,
+                            assessment_reason=f"Mandatory {c.label} (₹{c.amount:,.0f}) first observed at {s.stage} and not disclosed in advertised price."
+                        ))
+                    else:
+                        explanations.append(PriceComponentExplanation(
+                            component_type=c.component_type,
+                            label=c.label,
+                            amount=c.amount,
+                            is_mandatory=True,
+                            disclosure_stage=s.stage,
+                            disclosed_early=True,
+                            assessment_status=DarkPatternAssessmentStatus.EVALUATED_CLEAN,
+                            assessment_reason=f"Disclosed {c.label} (₹{c.amount:,.0f}) itemized at {s.stage}."
+                        ))
+                elif ctype in ("protection", "insurance", "donation", "charity"):
+                    # Optional add-ons
+                    if c.selected_by_default:
+                        explanations.append(PriceComponentExplanation(
+                            component_type=c.component_type,
+                            label=c.label,
+                            amount=c.amount,
+                            is_mandatory=False,
+                            disclosure_stage=s.stage,
+                            disclosed_early=False,
+                            assessment_status=DarkPatternAssessmentStatus.POTENTIAL_SIGNAL,
+                            assessment_reason=f"Pre-selected optional {c.label} (₹{c.amount:,.0f}) added at {s.stage}."
+                        ))
+                    else:
+                        explanations.append(PriceComponentExplanation(
+                            component_type=c.component_type,
+                            label=c.label,
+                            amount=c.amount,
+                            is_mandatory=False,
+                            disclosure_stage=s.stage,
+                            disclosed_early=False,
+                            assessment_status=DarkPatternAssessmentStatus.EVALUATED_CLEAN,
+                            assessment_reason=f"Optional {c.label} (₹{c.amount:,.0f}) at {s.stage}."
+                        ))
                 else:
                     explanations.append(PriceComponentExplanation(
                         component_type=c.component_type,
                         label=c.label,
                         amount=c.amount,
-                        is_mandatory=False,
+                        is_mandatory=c.is_mandatory,
                         disclosure_stage=s.stage,
-                        disclosed_early=False,
-                        assessment_status=DarkPatternAssessmentStatus.EVALUATED_CLEAN,
-                        assessment_reason=f"Optional {c.label} (₹{c.amount:,.0f}) at {s.stage}."
+                        disclosed_early=c.disclosed_early,
+                        assessment_status=DarkPatternAssessmentStatus.POTENTIAL_SIGNAL,
+                        assessment_reason=f"Additional fee observed at {s.stage}."
                     ))
-            else:
-                explanations.append(PriceComponentExplanation(
-                    component_type=c.component_type,
-                    label=c.label,
-                    amount=c.amount,
-                    is_mandatory=c.is_mandatory,
-                    disclosure_stage=s.stage,
-                    disclosed_early=c.disclosed_early,
-                    assessment_status=DarkPatternAssessmentStatus.POTENTIAL_SIGNAL,
-                    assessment_reason=f"Additional fee observed at {s.stage}."
-                ))
+
+    # Reconciled carryover summary notice
+    reconciled_carryover_note: Optional[str] = None
+    if carryover_charges:
+        carried_types = set()
+        carried_labels = []
+        for c in carryover_charges:
+            if c.component_type not in carried_types:
+                carried_types.add(c.component_type)
+                if c.component_type == "protection":
+                    carried_labels.append("Insurance")
+                elif c.component_type == "donation":
+                    carried_labels.append("carbon contribution")
+                else:
+                    carried_labels.append(c.label.lower())
+        if len(carried_labels) == 1:
+            reconciled_carryover_note = f"{carried_labels[0]} remained present at checkout and was not counted twice."
+        elif len(carried_labels) == 2:
+            reconciled_carryover_note = f"{carried_labels[0]} and {carried_labels[1]} remained present at checkout and were not counted twice."
+        elif len(carried_labels) > 2:
+            reconciled_carryover_note = f"{', '.join(carried_labels[:-1])}, and {carried_labels[-1]} remained present at checkout and were not counted twice."
+
+    new_charges = reconciled_new_charges
 
     # Check if there is unexplained price delta
     explained_sum = sum(c.amount for c in new_charges)
@@ -1005,7 +1049,9 @@ def assess_price_journey(
             amount=unexplained,
             is_mandatory=True,
             disclosed_early=False,
-            added_in_stage="checkout" if checkout_reached else "cart"
+            added_in_stage="checkout" if checkout_reached else "cart",
+            first_seen_stage="checkout" if checkout_reached else "cart",
+            last_seen_stage="checkout" if checkout_reached else "cart",
         ))
         explanations.append(PriceComponentExplanation(
             component_type="mandatory_fee",
@@ -1078,6 +1124,7 @@ def assess_price_journey(
         percentage_increase=pct,
         component_explanations=explanations,
         new_charges=new_charges,
+        reconciled_carryover_note=reconciled_carryover_note,
         dark_pattern_assessment=dark_assessment,
         is_drip_pricing=is_drip,
         potential_drip=is_drip,

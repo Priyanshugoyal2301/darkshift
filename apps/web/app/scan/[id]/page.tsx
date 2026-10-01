@@ -40,6 +40,10 @@ interface PriceComponent {
   disclosed_early: boolean;
   added_in_stage?: string;
   first_observed_stage?: string;
+  first_seen_stage?: string;
+  last_seen_stage?: string;
+  carryover?: boolean;
+  is_aggregate?: boolean;
   previously_disclosed?: boolean;
   is_delivery_dependent?: boolean;
 }
@@ -79,6 +83,7 @@ interface PriceJourney {
   percentage_increase?: number | null;
   component_explanations?: PriceComponentExplanation[];
   new_charges: PriceComponent[];
+  reconciled_carryover_note?: string;
   dark_pattern_assessment?: "DETECTED" | "POTENTIAL_SIGNAL" | "EVALUATED_CLEAN" | "INCONCLUSIVE";
   is_drip_pricing: boolean;
   potential_drip?: boolean;
@@ -278,17 +283,8 @@ export default function DualModeAuditPage({
 
   const displayName = scan?.target_metadata?.title || hostname;
 
-  // Collect itemized fees from Cart or Checkout
-  const itemizedFees: { label: string; amount: number; stage: string }[] = [];
-  stages.slice(1).forEach((s) => {
-    s.components?.forEach((c) => {
-      itemizedFees.push({
-        label: c.label,
-        amount: c.amount,
-        stage: s.stage,
-      });
-    });
-  });
+  // Use reconciled new charges directly from price journey
+  const reconciledCharges: PriceComponent[] = journey?.new_charges || [];
 
   // Extract primary potential issue explanation
   const dripFinding = findings.find((f) => f.pattern === "DRIP_PRICING");
@@ -409,7 +405,7 @@ export default function DualModeAuditPage({
             {/* Main Result Card (Exact Layout from Specification) */}
             <section className="bg-white border border-[#E5E7EB] rounded-lg p-6 shadow-xs space-y-4">
               <div className="text-xs font-semibold text-[#6B7280] uppercase tracking-wider">
-                Potential risk
+                Risk assessment
               </div>
 
               <div className="flex items-baseline gap-3">
@@ -438,7 +434,7 @@ export default function DualModeAuditPage({
                 <div className="flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-[#2563EB]"></span>
                   <span>
-                    {findings.length} potential dark-pattern {findings.length === 1 ? "signal" : "signals"}
+                    {findings.length} potential {findings.length === 1 ? "signal" : "signals"} detected
                   </span>
                 </div>
                 <span>•</span>
@@ -557,29 +553,61 @@ export default function DualModeAuditPage({
                 </div>
 
                 {/* What changed? Table */}
-                {itemizedFees.length > 0 && (
+                {reconciledCharges.length > 0 && (
                   <div className="space-y-3 pt-2">
-                    <div className="text-sm font-semibold text-[#111827]">What changed?</div>
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold text-[#111827]">What changed?</div>
+                      <span className="text-xs text-[#6B7280]">
+                        Reconciled itemized additions across purchase flow
+                      </span>
+                    </div>
+
                     <div className="border border-[#E5E7EB] rounded-md overflow-hidden">
                       <table className="w-full text-left text-xs">
                         <thead className="bg-[#F9FAFB] text-[#6B7280] border-b border-[#E5E7EB] font-medium">
                           <tr>
                             <th className="py-2.5 px-4">Charge</th>
-                            <th className="py-2.5 px-4">Amount</th>
-                            <th className="py-2.5 px-4">Added</th>
+                            <th className="py-2.5 px-4 text-right">Amount</th>
+                            <th className="py-2.5 px-4 text-right">First seen</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-[#E5E7EB] text-[#111827]">
-                          {itemizedFees.map((fee, idx) => (
+                          {reconciledCharges.map((fee, idx) => (
                             <tr key={idx} className="hover:bg-[#F9FAFB]/50">
                               <td className="py-2.5 px-4 font-medium">{fee.label}</td>
-                              <td className="py-2.5 px-4">₹{fee.amount.toLocaleString()}</td>
-                              <td className="py-2.5 px-4 text-[#6B7280] capitalize">{fee.stage}</td>
+                              <td className="py-2.5 px-4 text-right font-medium">₹{fee.amount.toLocaleString()}</td>
+                              <td className="py-2.5 px-4 text-right text-[#6B7280] capitalize">
+                                {fee.first_seen_stage || fee.added_in_stage || "checkout"}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
+                        <tfoot className="border-t border-[#E5E7EB] bg-[#F9FAFB] font-semibold text-xs text-[#111827]">
+                          <tr>
+                            <td className="py-2.5 px-4">New charges identified</td>
+                            <td className="py-2.5 px-4 text-right text-[#DC2626]">
+                              ₹{reconciledCharges.reduce((acc, c) => acc + c.amount, 0).toLocaleString()}
+                            </td>
+                            <td className="py-2.5 px-4 text-right text-[#6B7280]">
+                              {reconciledCharges.length} itemized
+                            </td>
+                          </tr>
+                        </tfoot>
                       </table>
                     </div>
+
+                    {/* Reconciled charges carryover notice */}
+                    {journey?.reconciled_carryover_note && (
+                      <div className="p-3 rounded-md bg-[#F0FDF4] border border-[#BBF7D0] flex items-start gap-2.5 text-xs text-[#15803D]">
+                        <svg className="w-4 h-4 text-[#16A34A] flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <div className="leading-relaxed">
+                          <span className="font-semibold">Reconciled charges: </span>
+                          <span>{journey.reconciled_carryover_note}</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -787,42 +815,80 @@ export default function DualModeAuditPage({
                 <div className="space-y-3">
                   {filteredFindings.map((f) => (
                     <div key={f.id} className="p-4 rounded-lg bg-[#0e1422] border border-slate-800 space-y-3">
-                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-slate-800/80 pb-2.5">
-                        <div>
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-950 border border-blue-800 text-blue-300 font-bold">
-                              RULE: {f.rule_ids?.[0] || f.pattern}
-                            </span>
-                            <span className="text-[10px] text-slate-400">{f.ccpa_regulation}</span>
+                      {/* Human Interpretation First */}
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-800/80 pb-3">
+                        <div className="space-y-1">
+                          <div className="text-xs uppercase tracking-wider font-semibold text-slate-400">
+                            {f.pattern.replace(/_/g, " ")}
                           </div>
-                          <div className="text-sm font-bold text-white">{f.title}</div>
+                          <div className="text-base font-bold text-white">{f.title}</div>
+                          <div className="text-[11px] text-slate-400 flex items-center gap-2">
+                            <span>CCPA category: <span className="text-slate-300 font-medium">{f.ccpa_category || f.pattern.replace(/_/g, " ")}</span></span>
+                            <span>•</span>
+                            <span className="text-slate-500">{f.ccpa_regulation}</span>
+                          </div>
                         </div>
 
-                        <div className="text-right">
-                          <div className="text-slate-400">CONFIDENCE: {Math.round(f.confidence * 100)}%</div>
-                          <div className="text-slate-500 text-[10px]">TIER: {f.confidence_tier || "MEDIUM"}</div>
+                        <div className="text-right flex sm:flex-col items-center sm:items-end justify-between sm:justify-start gap-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-slate-400">
+                              {f.confidence >= 0.8 ? "High confidence" : "Potential signal"}
+                            </span>
+                            <span className="text-sm font-bold text-blue-400">
+                              {Math.round(f.confidence * 100)}%
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            TIER: {f.confidence_tier || "MEDIUM"}
+                          </div>
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
-                        <div>
-                          <span className="text-slate-500 font-bold">TECHNICAL EXPLANATION:</span>
-                          <p className="text-slate-300 mt-0.5">{f.explanation}</p>
-                        </div>
-                        <div>
-                          <span className="text-slate-500 font-bold">REMEDIATION SPECIFICATION:</span>
-                          <p className="text-slate-300 mt-0.5">{f.remediation_hint || f.consumer_advice}</p>
-                        </div>
-                      </div>
-
-                      {f.dom_evidence && f.dom_evidence.length > 0 && (
-                        <div className="pt-2 border-t border-slate-800/70 text-[10px]">
-                          <span className="text-slate-500 font-bold">DOM SELECTOR:</span>
-                          <pre className="mt-1 p-2 rounded bg-[#05070d] border border-slate-800/80 text-blue-300 overflow-x-auto">
-                            {f.dom_evidence[0].selector}
-                          </pre>
+                      {/* Evidence Section */}
+                      {(f.text_snippets?.length > 0 || (f.dom_evidence && f.dom_evidence.length > 0)) && (
+                        <div className="space-y-1.5 text-[11px]">
+                          <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">EVIDENCE:</span>
+                          {f.text_snippets?.length > 0 ? (
+                            <div className="p-2.5 rounded bg-[#05070d] border border-slate-800/80 text-emerald-300 italic font-mono text-[11px] leading-relaxed">
+                              "{f.text_snippets[0]}"
+                            </div>
+                          ) : f.dom_evidence && f.dom_evidence[0]?.text_content ? (
+                            <div className="p-2.5 rounded bg-[#05070d] border border-slate-800/80 text-emerald-300 italic font-mono text-[11px] leading-relaxed">
+                              "{f.dom_evidence[0].text_content}"
+                            </div>
+                          ) : null}
                         </div>
                       )}
+
+                      {/* Technical Details: Rule ID & Explanations */}
+                      <div className="pt-2 border-t border-slate-800/60 space-y-2.5 text-[11px]">
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">DETECTION RULE:</span>
+                          <span className="text-[11px] px-2 py-0.5 rounded bg-blue-950/80 border border-blue-800 text-blue-300 font-mono font-bold">
+                            {f.rule_ids?.[0] || f.pattern}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div>
+                            <span className="text-slate-500 font-bold">TECHNICAL EXPLANATION:</span>
+                            <p className="text-slate-300 mt-0.5 leading-relaxed">{f.explanation}</p>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 font-bold">REMEDIATION SPECIFICATION:</span>
+                            <p className="text-slate-300 mt-0.5 leading-relaxed">{f.remediation_hint || f.consumer_advice}</p>
+                          </div>
+                        </div>
+
+                        {f.dom_evidence && f.dom_evidence.length > 0 && f.dom_evidence[0]?.selector && (
+                          <div className="pt-1 text-[10px]">
+                            <span className="text-slate-500 font-bold">DOM SELECTOR:</span>
+                            <pre className="mt-1 p-2 rounded bg-[#05070d] border border-slate-800/80 text-blue-300 overflow-x-auto font-mono">
+                              {f.dom_evidence[0].selector}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>

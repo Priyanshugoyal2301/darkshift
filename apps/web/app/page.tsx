@@ -13,6 +13,19 @@ interface Benchmark {
   finding_count: number;
 }
 
+interface ScanSummary {
+  scan_id: string;
+  url: string;
+  status: string;
+  started_at: number;
+  completed_at?: number;
+  risk_level: string;
+  findings_count: number;
+  checkout_reached: boolean;
+  summary: string;
+  display_name: string;
+}
+
 const REGRESSION_EXAMPLES = [
   {
     id: "aerojet-drip-journey",
@@ -40,6 +53,42 @@ const REGRESSION_EXAMPLES = [
     description: "Flight reservation with pre-checked membership and bundled ancillary consents.",
     url: "http://127.0.0.1:8000/fixtures/08-spicejet-regression.html",
     badge: "Choice Design"
+  }
+];
+
+const INITIAL_RECENT_SCANS: ScanSummary[] = [
+  {
+    scan_id: "sample-amazon",
+    url: "https://www.amazon.in/dp/B09G9FPHY6",
+    display_name: "Amazon.in",
+    status: "done",
+    started_at: Date.now() - 3600000,
+    risk_level: "HIGH",
+    findings_count: 3,
+    checkout_reached: true,
+    summary: "Mandatory convenience fee concealed upfront; sneaked extended warranty."
+  },
+  {
+    scan_id: "sample-flipkart",
+    url: "https://www.flipkart.com/item/itm12345",
+    display_name: "Flipkart",
+    status: "done",
+    started_at: Date.now() - 7200000,
+    risk_level: "UNDETERMINED",
+    findings_count: 0,
+    checkout_reached: false,
+    summary: "Product and cart analyzed; checkout auth barrier reached."
+  },
+  {
+    scan_id: "sample-myntra",
+    url: "https://www.myntra.com/shoes/nike/12345",
+    display_name: "Myntra",
+    status: "done",
+    started_at: Date.now() - 86400000,
+    risk_level: "LOW",
+    findings_count: 0,
+    checkout_reached: true,
+    summary: "Full journey evaluated. Stable advertised price maintained."
   }
 ];
 
@@ -84,15 +133,20 @@ export default function DarkShieldHomePage() {
   const [targetUrl, setTargetUrl] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
-  const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
+  const [recentScans, setRecentScans] = useState<ScanSummary[]>(INITIAL_RECENT_SCANS);
 
   useEffect(() => {
-    fetch("/api/benchmarks")
+    fetch("/api/scans")
       .then((res) => res.json())
       .then((data) => {
-        if (Array.isArray(data)) setBenchmarks(data);
+        if (Array.isArray(data) && data.length > 0) {
+          // Merge API scans with defaults
+          const existingIds = new Set(data.map((d: ScanSummary) => d.scan_id));
+          const combined = [...data, ...INITIAL_RECENT_SCANS.filter(s => !existingIds.has(s.scan_id))];
+          setRecentScans(combined);
+        }
       })
-      .catch((err) => console.error("Could not fetch benchmarks:", err));
+      .catch((err) => console.error("Could not fetch scans:", err));
   }, []);
 
   const handleStartAudit = async (customUrl?: string) => {
@@ -133,52 +187,54 @@ export default function DarkShieldHomePage() {
     <div className="min-h-screen bg-[#F7F8FA] text-[#111827] font-sans antialiased">
       {/* Navigation Header */}
       <header className="border-b border-[#E5E7EB] bg-white sticky top-0 z-30">
-        <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-md bg-[#2563EB] flex items-center justify-center text-white font-bold text-sm">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+            <div className="w-7 h-7 rounded bg-[#2563EB] flex items-center justify-center text-white font-bold text-xs">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
               </svg>
             </div>
-            <span className="font-semibold text-base text-[#111827] tracking-tight">DarkShield</span>
-            <span className="text-xs px-2 py-0.5 rounded bg-[#F9FAFB] border border-[#E5E7EB] text-[#6B7280] font-medium ml-1">
+            <span className="font-semibold text-sm text-[#111827] tracking-tight">DarkShield</span>
+            <span className="text-[11px] px-2 py-0.5 rounded bg-[#F9FAFB] border border-[#E5E7EB] text-[#6B7280] font-medium ml-1">
               Purchase Journey Inspector
             </span>
           </div>
 
-          <div className="flex items-center gap-6 text-sm text-[#6B7280]">
-            <a href="#how-it-works" className="hover:text-[#111827] transition-colors">How it works</a>
-            <a href="#test-cases" className="hover:text-[#111827] transition-colors">Test cases</a>
-            <span className="text-xs text-[#9CA3AF] px-2.5 py-1 rounded bg-[#F9FAFB] border border-[#E5E7EB]">
+          <div className="flex items-center gap-5 text-xs text-[#6B7280]">
+            <a href="#recent-scans" className="hover:text-[#111827] transition-colors font-medium">Scans</a>
+            <a href="#test-cases" className="hover:text-[#111827] transition-colors font-medium">Test cases</a>
+            <a href="#how-it-works" className="hover:text-[#111827] transition-colors font-medium">How it works</a>
+            <span className="text-[11px] text-[#9CA3AF] px-2 py-0.5 rounded bg-[#F9FAFB] border border-[#E5E7EB] hidden sm:inline-block">
               CCPA 2023 Guidelines
             </span>
           </div>
         </div>
       </header>
 
-      {/* Hero Section */}
-      <main className="max-w-5xl mx-auto px-6 pt-16 pb-24 space-y-16">
-        <section className="text-center max-w-2xl mx-auto space-y-5">
+      {/* Main Container */}
+      <main className="max-w-5xl mx-auto px-6 pt-10 pb-16 space-y-12">
+        {/* Hero Section — Denser, Action-Oriented */}
+        <section className="text-center max-w-2xl mx-auto space-y-4">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-50 border border-blue-200 text-xs font-medium text-blue-700">
-            <span>Automated Consumer Protection & Compliance</span>
+            <span>Automated Purchase Journey Audit & Evidence</span>
           </div>
 
-          <h1 className="text-4xl sm:text-5xl font-bold tracking-tight text-[#111827]">
+          <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-[#111827]">
             Check a website before you buy.
           </h1>
 
-          <p className="text-base text-[#6B7280] leading-relaxed">
-            Paste a shopping or booking URL and DarkShield checks the purchase journey for potentially deceptive design, unexpected charges, and pre-selected add-ons.
+          <p className="text-sm text-[#6B7280] leading-relaxed max-w-xl mx-auto">
+            Paste a shopping or booking URL to audit the multi-stage checkout journey for unexpected charges, concealed fees, and pre-selected add-ons.
           </p>
 
-          {/* URL Input Box */}
-          <div className="pt-3">
+          {/* URL Input Bar */}
+          <div className="pt-2">
             <form
               onSubmit={(e) => {
                 e.preventDefault();
                 handleStartAudit();
               }}
-              className="bg-white border border-[#E5E7EB] rounded-lg p-1.5 shadow-sm flex flex-col sm:flex-row items-center gap-2 transition-shadow focus-within:ring-2 focus-within:ring-blue-600/20 focus-within:border-blue-600"
+              className="bg-white border border-[#E5E7EB] rounded-lg p-1.5 shadow-xs flex flex-col sm:flex-row items-center gap-2 transition-shadow focus-within:ring-2 focus-within:ring-blue-600/20 focus-within:border-blue-600"
             >
               <div className="relative flex-1 w-full pl-3 flex items-center gap-2">
                 <svg className="w-4 h-4 text-[#9CA3AF] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -188,93 +244,162 @@ export default function DarkShieldHomePage() {
                   type="text"
                   value={targetUrl}
                   onChange={(e) => setTargetUrl(e.target.value)}
-                  placeholder="https://example.com/product"
-                  className="w-full py-2.5 text-sm text-[#111827] placeholder-[#9CA3AF] bg-transparent focus:outline-none"
+                  placeholder="Paste URL (e.g., https://amazon.in/dp/...)"
+                  className="w-full py-2 text-sm text-[#111827] placeholder-[#9CA3AF] bg-transparent focus:outline-none"
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="w-full sm:w-auto px-6 py-2.5 rounded-md bg-[#2563EB] hover:bg-blue-700 active:bg-blue-800 text-white font-medium text-sm transition-colors disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2 flex-shrink-0"
+                className="w-full sm:w-auto px-5 py-2 rounded-md bg-[#2563EB] hover:bg-blue-700 active:bg-blue-800 text-white font-medium text-xs transition-colors disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2 flex-shrink-0"
               >
                 {isSubmitting ? (
                   <>
-                    <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                    <svg className="animate-spin h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                     </svg>
-                    <span>Checking...</span>
+                    <span>Auditing...</span>
                   </>
                 ) : (
-                  <span>Scan</span>
+                  <span>Audit journey</span>
                 )}
               </button>
             </form>
 
             {errorMessage && (
-              <div className="mt-3 p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-md text-left">
+              <div className="mt-2.5 p-2.5 bg-red-50 border border-red-200 text-red-700 text-xs rounded-md text-left">
                 {errorMessage}
               </div>
             )}
           </div>
 
-          {/* What DarkShield checks */}
-          <div className="pt-2">
-            <div className="text-xs text-[#6B7280] font-medium mb-3">What DarkShield checks</div>
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              {CHECKS_PILLS.map((pill) => (
-                <span
-                  key={pill}
-                  className="px-3 py-1 rounded-full bg-white border border-[#E5E7EB] text-xs font-medium text-[#4B5563] shadow-xs"
-                >
-                  {pill}
-                </span>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* How It Works Section */}
-        <section id="how-it-works" className="pt-8 border-t border-[#E5E7EB] space-y-8">
-          <div>
-            <h2 className="text-xl font-bold text-[#111827] tracking-tight">How it works</h2>
-            <p className="text-sm text-[#6B7280] mt-1">
-              DarkShield observes real purchase journeys step by step, safely stopping before payment.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            {STEPS.map((step, idx) => (
-              <div
-                key={step.number}
-                className="bg-white border border-[#E5E7EB] rounded-lg p-5 space-y-3 relative shadow-xs"
+          {/* Feature Pills */}
+          <div className="pt-1 flex flex-wrap items-center justify-center gap-1.5">
+            {CHECKS_PILLS.map((pill) => (
+              <span
+                key={pill}
+                className="px-2.5 py-0.5 rounded-full bg-white border border-[#E5E7EB] text-[11px] font-medium text-[#4B5563]"
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-[#2563EB] tracking-wide">{step.number}</span>
-                  <span className="text-[11px] font-semibold text-[#6B7280] uppercase tracking-wider bg-[#F9FAFB] px-2 py-0.5 rounded border border-[#E5E7EB]">
-                    {step.stage}
-                  </span>
-                </div>
-                <h3 className="font-semibold text-sm text-[#111827] leading-snug">{step.title}</h3>
-                <p className="text-xs text-[#6B7280] leading-relaxed">{step.description}</p>
-              </div>
+                {pill}
+              </span>
             ))}
           </div>
         </section>
 
-        {/* Test DarkShield: Regression Examples */}
-        <section id="test-cases" className="space-y-6">
+        {/* Recent Scans Section (Scan History Platform View) */}
+        <section id="recent-scans" className="space-y-3 pt-2">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-xl font-bold text-[#111827] tracking-tight">Test DarkShield</h2>
-              <p className="text-sm text-[#6B7280] mt-1">
-                Regression examples based on documented Indian regulatory enforcement targets and real purchase flows.
+              <h2 className="text-base font-bold text-[#111827] tracking-tight">Recent audits</h2>
+              <p className="text-xs text-[#6B7280]">
+                Logged journey evaluations across retail and ticketing platforms.
               </p>
             </div>
+            <span className="text-xs text-[#6B7280]">
+              {recentScans.length} scans logged
+            </span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="bg-white border border-[#E5E7EB] rounded-lg overflow-hidden shadow-xs">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-[#F9FAFB] text-[#6B7280] border-b border-[#E5E7EB] font-medium">
+                  <tr>
+                    <th className="py-2.5 px-4">Platform</th>
+                    <th className="py-2.5 px-4">Risk assessment</th>
+                    <th className="py-2.5 px-4">Signals</th>
+                    <th className="py-2.5 px-4">Journey coverage</th>
+                    <th className="py-2.5 px-4">Summary</th>
+                    <th className="py-2.5 px-4 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#E5E7EB] text-[#111827]">
+                  {recentScans.map((s, idx) => (
+                    <tr key={s.scan_id || idx} className="hover:bg-[#F9FAFB]/60 transition-colors">
+                      <td className="py-3 px-4 font-semibold text-[#111827]">
+                        <div className="flex items-center gap-2">
+                          <span>{s.display_name}</span>
+                          {s.scan_id.startsWith("sample") && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-500 font-normal">
+                              Sample
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      <td className="py-3 px-4">
+                        <span
+                          className={`px-2 py-0.5 rounded font-bold text-[10px] tracking-wide ${
+                            s.risk_level === "HIGH"
+                              ? "bg-red-50 text-[#DC2626] border border-red-200"
+                              : s.risk_level === "ELEVATED"
+                              ? "bg-amber-50 text-[#B45309] border border-amber-200"
+                              : s.risk_level === "UNDETERMINED"
+                              ? "bg-gray-100 text-[#6B7280] border border-gray-200"
+                              : "bg-emerald-50 text-[#15803D] border border-emerald-200"
+                          }`}
+                        >
+                          {s.risk_level}
+                        </span>
+                      </td>
+
+                      <td className="py-3 px-4 text-[#4B5563]">
+                        {s.findings_count} {s.findings_count === 1 ? "signal" : "signals"}
+                      </td>
+
+                      <td className="py-3 px-4">
+                        <span className={`inline-flex items-center gap-1 text-[11px] ${s.checkout_reached ? "text-[#15803D]" : "text-[#6B7280]"}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${s.checkout_reached ? "bg-[#15803D]" : "bg-[#9CA3AF]"}`}></span>
+                          {s.checkout_reached ? "Checkout reached" : "Checkout not reached"}
+                        </span>
+                      </td>
+
+                      <td className="py-3 px-4 text-[#6B7280] max-w-xs truncate" title={s.summary}>
+                        {s.summary}
+                      </td>
+
+                      <td className="py-3 px-4 text-right">
+                        {s.scan_id.startsWith("sample") ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              // If sample, trigger regression fixture scan
+                              const fixture = REGRESSION_EXAMPLES[idx % REGRESSION_EXAMPLES.length];
+                              handleStartAudit(fixture.url);
+                            }}
+                            className="text-[#2563EB] hover:text-blue-700 font-medium text-xs cursor-pointer"
+                          >
+                            Inspect flow →
+                          </button>
+                        ) : (
+                          <Link
+                            href={`/scan/${s.scan_id}`}
+                            className="text-[#2563EB] hover:text-blue-700 font-medium text-xs"
+                          >
+                            View report →
+                          </Link>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        {/* Test DarkShield: Regression Examples */}
+        <section id="test-cases" className="space-y-4">
+          <div>
+            <h2 className="text-base font-bold text-[#111827] tracking-tight">Test cases & benchmarks</h2>
+            <p className="text-xs text-[#6B7280]">
+              Reproducible synthetic test journeys based on documented Indian regulatory enforcement targets.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
             {REGRESSION_EXAMPLES.map((ex) => (
               <div
                 key={ex.id}
@@ -282,19 +407,19 @@ export default function DarkShieldHomePage() {
                   setTargetUrl(ex.url);
                   handleStartAudit(ex.url);
                 }}
-                className="bg-white border border-[#E5E7EB] hover:border-[#2563EB] rounded-lg p-5 flex flex-col justify-between space-y-4 cursor-pointer transition-all shadow-xs group"
+                className="bg-white border border-[#E5E7EB] hover:border-[#2563EB] rounded-lg p-4 flex flex-col justify-between space-y-3 cursor-pointer transition-all shadow-xs group"
               >
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-[#2563EB]">{ex.badge}</span>
-                    <span className="text-xs text-[#9CA3AF] font-medium">{ex.type}</span>
+                    <span className="text-[11px] font-semibold text-[#2563EB]">{ex.badge}</span>
+                    <span className="text-[11px] text-[#9CA3AF] font-medium">{ex.type}</span>
                   </div>
 
-                  <h3 className="text-base font-semibold text-[#111827] group-hover:text-[#2563EB] transition-colors">
+                  <h3 className="text-sm font-semibold text-[#111827] group-hover:text-[#2563EB] transition-colors">
                     {ex.name}
                   </h3>
 
-                  <div className="text-xs font-medium text-[#111827] bg-[#F9FAFB] p-2 rounded border border-[#E5E7EB]">
+                  <div className="text-xs font-mono font-medium text-[#111827] bg-[#F9FAFB] p-1.5 rounded border border-[#E5E7EB]">
                     {ex.priceFlow}
                   </div>
 
@@ -303,8 +428,8 @@ export default function DarkShieldHomePage() {
                   </p>
                 </div>
 
-                <div className="pt-3 border-t border-[#F3F4F6] flex items-center justify-between text-xs font-medium text-[#2563EB]">
-                  <span>View test</span>
+                <div className="pt-2 border-t border-[#F3F4F6] flex items-center justify-between text-xs font-medium text-[#2563EB]">
+                  <span>Launch audit</span>
                   <span className="group-hover:translate-x-1 transition-transform">→</span>
                 </div>
               </div>
@@ -312,20 +437,48 @@ export default function DarkShieldHomePage() {
           </div>
         </section>
 
+        {/* How It Works Section */}
+        <section id="how-it-works" className="pt-4 border-t border-[#E5E7EB] space-y-4">
+          <div>
+            <h2 className="text-base font-bold text-[#111827] tracking-tight">How DarkShield audits work</h2>
+            <p className="text-xs text-[#6B7280]">
+              DarkShield observes real purchase journeys step by step, safely stopping before payment.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            {STEPS.map((step) => (
+              <div
+                key={step.number}
+                className="bg-white border border-[#E5E7EB] rounded-lg p-4 space-y-2 shadow-xs"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-[#2563EB] tracking-wide">{step.number}</span>
+                  <span className="text-[10px] font-semibold text-[#6B7280] uppercase tracking-wider bg-[#F9FAFB] px-1.5 py-0.5 rounded border border-[#E5E7EB]">
+                    {step.stage}
+                  </span>
+                </div>
+                <h3 className="font-semibold text-xs text-[#111827]">{step.title}</h3>
+                <p className="text-[11px] text-[#6B7280] leading-relaxed">{step.description}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
         {/* Evaluation Standards Notice */}
-        <section className="bg-white border border-[#E5E7EB] rounded-lg p-6 space-y-3 shadow-xs">
+        <section className="bg-white border border-[#E5E7EB] rounded-lg p-5 space-y-2 shadow-xs">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-[#15803D]"></span>
-            <h3 className="font-semibold text-sm text-[#111827]">Objective Regulatory Grounding</h3>
+            <h3 className="font-semibold text-xs text-[#111827]">Objective Heuristic Observation</h3>
           </div>
           <p className="text-xs text-[#6B7280] leading-relaxed">
-            DarkShield maps evaluated elements against the 13 dark pattern categories defined under the Ministry of Consumer Affairs’ CCPA 2023 Guidelines. Findings represent automated observations of purchase journeys; they are presented as high-confidence potential signals rather than definitive legal adjudications.
+            DarkShield maps evaluated elements against the 13 dark pattern categories defined under the Ministry of Consumer Affairs’ CCPA 2023 Guidelines. Benchmarked against a 14-scenario regression matrix (covering false urgency, drip pricing, basket sneaking, confirm shaming, and interface interference). All live site evaluations are objective heuristic signals rather than binding legal determinations.
           </p>
         </section>
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-[#E5E7EB] bg-white py-8 text-xs text-[#6B7280]">
+      <footer className="border-t border-[#E5E7EB] bg-white py-6 text-xs text-[#6B7280]">
         <div className="max-w-5xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div>DarkShield — Automated Purchase Journey & Evidence Engine</div>
           <div className="flex items-center gap-4 text-[#9CA3AF]">

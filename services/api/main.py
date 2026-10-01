@@ -47,6 +47,7 @@ from schemas import (
     AuditLogEntry, TargetMetadata,
     ConfidenceTier, CoverageStatus, RiskAssessment, ScanCoverage,
     PatternCoverageItem, PriceComponent, PriceStage, ActionPolicyTier,
+    ScanSummary,
 )
 from detection_engine import (
     analyze_page, compute_transparency_score, extract_prices_from_text,
@@ -694,6 +695,32 @@ async def list_benchmarks():
         }
         for b in BENCHMARKS
     ]
+
+
+@app.get("/api/scans", response_model=list[ScanSummary])
+async def list_recent_scans():
+    results = []
+    for s in sorted(scan_store.values(), key=lambda x: x.started_at, reverse=True):
+        hostname = "example.com"
+        try:
+            hostname = urlparse(s.url).hostname or s.url
+        except Exception:
+            hostname = s.url
+        display_name = s.target_metadata.title if (s.target_metadata and s.target_metadata.title) else hostname
+        results.append(ScanSummary(
+            scan_id=s.scan_id,
+            url=s.url,
+            status=s.status,
+            started_at=s.started_at,
+            completed_at=s.completed_at,
+            risk_level=s.risk_assessment.risk_level if s.risk_assessment else "UNDETERMINED",
+            findings_count=len(s.findings),
+            checkout_reached=s.scan_coverage.checkout_reached if s.scan_coverage else False,
+            summary=s.risk_assessment.summary if s.risk_assessment else "Scan queued",
+            display_name=display_name,
+        ))
+    return results
+
 
 
 @app.post("/api/scan", response_model=ScanResponse)
