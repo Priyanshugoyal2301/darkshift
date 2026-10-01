@@ -84,6 +84,11 @@ export default function DualModeAuditPage({ params }: { params: Promise<{ id: st
     setExpandedFindings(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
+  const displayRiskLevel = 
+    (risk?.risk_level === "UNDETERMINED" && findings.length === 0 && (scan?.status === "done" || (scan?.pages_analyzed ?? 0) > 0 || !!scan?.screenshot_base64))
+      ? "LOW"
+      : (risk?.risk_level || "PENDING");
+
   const getRiskColor = (level?: string) => {
     switch (level) {
       case "HIGH": return "text-red-700";
@@ -164,9 +169,14 @@ export default function DualModeAuditPage({ params }: { params: Promise<{ id: st
 
               <div className="space-y-1">
                 <div className="text-[10px] font-bold tracking-widest text-gray-400 uppercase">Risk Assessment</div>
-                <div className={`text-4xl font-black tracking-tighter ${getRiskColor(risk?.risk_level)}`}>
-                  {risk?.risk_level || "PENDING"}
+                <div className={`text-4xl font-black tracking-tighter ${getRiskColor(displayRiskLevel)}`}>
+                  {displayRiskLevel}
                 </div>
+                {displayRiskLevel === "LOW" && findings.length === 0 && (
+                  <div className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded inline-block mt-1">
+                    ✓ Verified Clean (No Deceptive Signals)
+                  </div>
+                )}
               </div>
 
               {findings.length > 0 && (

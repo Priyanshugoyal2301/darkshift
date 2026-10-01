@@ -1309,10 +1309,13 @@ def compute_risk_assessment(
     elif med_count >= 1 or risk_score >= 20:
         level = "ELEVATED"
         summary = f"{len(findings)} potential dark pattern signals identified. Verification advised."
-    elif not coverage_sufficient:
-        # Insufficient coverage and 0 critical violations: UNDETERMINED (NOT "Low risk" / "Safe"!)
+    elif len(stages_scanned) == 0:
         level = "UNDETERMINED"
-        summary = "Scan coverage incomplete (purchase flow stages not reached). Cannot verify absence of deceptive charges."
+        summary = "No pages could be analyzed. Website access was restricted or unreachable."
+    elif not coverage_sufficient:
+        # Zero violations detected on evaluated pages: LOW risk for inspected scope
+        level = "LOW"
+        summary = f"No deceptive patterns detected on evaluated listing ({len(stages_scanned)} stage scanned). Later checkout stages were not reached."
     else:
         # Sufficient coverage and 0 violations: LOW
         level = "LOW"

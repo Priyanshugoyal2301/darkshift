@@ -24,7 +24,9 @@ BOT_SIGNALS = [
 ]
 
 CAPTCHA_SIGNALS = [
-    "cf-turnstile-wrapper",
+    "g-recaptcha",
+    "h-captcha",
+    "cf-turnstile",
     "captcha-delivery",
     "captcha_box",
 ]
