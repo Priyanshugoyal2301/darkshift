@@ -869,18 +869,19 @@ def assess_price_journey(
     """
     Separates:
     1. Mathematical Deltas (P0, P1, P2, delta_01, delta_12, delta_total)
-    2. Component Explanations (What caused it, disclosure stage)
+       - Handles uncaptured prices (total is None) honestly without fake fallbacks
+    2. Component Explanations (What caused it, disclosure stage, delivery-dependence)
     3. Dark-Pattern Assessment (Was the presentation deceptive under CCPA § 5(7)?)
-       Does NOT automatically flag every price increase (e.g. standard delivery) as drip pricing!
+       - Does NOT flag legitimate delivery charges as drip pricing!
     """
     findings: list[Finding] = []
     if not price_stages:
         return PriceJourney(
             stages=[],
-            initial_price=0.0,
-            final_observed_price=0.0,
-            delta_total=0.0,
-            percentage_increase=0.0,
+            initial_price=None,
+            final_observed_price=None,
+            delta_total=None,
+            percentage_increase=None,
             new_charges=[],
             component_explanations=[],
             dark_pattern_assessment=DarkPatternAssessmentStatus.INCONCLUSIVE,
@@ -890,24 +891,28 @@ def assess_price_journey(
         ), []
 
     checkout_reached = "checkout" in stages_scanned
-    p0 = price_stages[0].total
 
-    # Find cart price (P1) and checkout price (P2)
-    p1 = p0
-    p2 = p0
-    for s in price_stages:
-        if s.stage == "cart":
-            p1 = s.total
-        elif s.stage == "checkout":
-            p2 = s.total
+    stage_p0 = next((s for s in price_stages if s.stage == "product"), None)
+    stage_p1 = next((s for s in price_stages if s.stage == "cart"), None)
+    stage_p2 = next((s for s in price_stages if s.stage == "checkout"), None)
 
-    if not any(s.stage == "checkout" for s in price_stages):
-        p2 = p1 if any(s.stage == "cart" for s in price_stages) else p0
+    p0 = stage_p0.total if (stage_p0 and stage_p0.is_captured) else None
+    p1 = stage_p1.total if (stage_p1 and stage_p1.is_captured) else None
+    p2 = stage_p2.total if (stage_p2 and stage_p2.is_captured) else None
 
-    delta_01 = round(max(0.0, p1 - p0), 2)
-    delta_12 = round(max(0.0, p2 - p1), 2)
-    delta_total = round(max(0.0, p2 - p0), 2)
-    pct = round((delta_total / p0) * 100, 1) if p0 > 0 else 0.0
+    # Mathematical Deltas
+    delta_01 = round(max(0.0, p1 - p0), 2) if (p0 is not None and p1 is not None) else None
+    delta_12 = round(max(0.0, p2 - p1), 2) if (p1 is not None and p2 is not None) else None
+
+    if p0 is not None and p2 is not None:
+        delta_total = round(max(0.0, p2 - p0), 2)
+        pct = round((delta_total / p0) * 100, 1) if p0 > 0 else 0.0
+    elif p0 is not None and p1 is not None and p2 is None:
+        delta_total = round(max(0.0, p1 - p0), 2)
+        pct = round((delta_total / p0) * 100, 1) if p0 > 0 else 0.0
+    else:
+        delta_total = None
+        pct = None
 
     explanations: list[PriceComponentExplanation] = []
     new_charges: list[PriceComponent] = []
@@ -917,20 +922,9 @@ def assess_price_journey(
         for c in s.components:
             new_charges.append(c)
             ctype = c.component_type.lower()
-            if ctype in ("convenience_fee", "platform_fee", "handling_fee", "mandatory_fee"):
-                # Mandatory fee withheld from initial listing: DECEPTIVE DRIP PRICING under CCPA § 5(7)
-                explanations.append(PriceComponentExplanation(
-                    component_type=c.component_type,
-                    label=c.label,
-                    amount=c.amount,
-                    is_mandatory=True,
-                    disclosure_stage=s.stage,
-                    disclosed_early=False,
-                    assessment_status=DarkPatternAssessmentStatus.DETECTED,
-                    assessment_reason=f"Mandatory {c.label} (₹{c.amount:,.0f}) withheld from initial listing and disclosed at {s.stage} step."
-                ))
-            elif ctype in ("shipping", "delivery"):
-                # Legitimate variable delivery charges
+            
+            # Legitimate variable delivery charges (NOT drip pricing)
+            if c.is_delivery_dependent or ctype in ("shipping", "delivery"):
                 explanations.append(PriceComponentExplanation(
                     component_type=c.component_type,
                     label=c.label,
@@ -939,20 +933,56 @@ def assess_price_journey(
                     disclosure_stage=s.stage,
                     disclosed_early=True,
                     assessment_status=DarkPatternAssessmentStatus.EVALUATED_CLEAN,
-                    assessment_reason=f"Standard delivery charges (₹{c.amount:,.0f}) disclosed upon reaching {s.stage}."
+                    assessment_reason=f"Standard variable delivery charge (₹{c.amount:,.0f}) disclosed upon reaching {s.stage}."
                 ))
+            elif ctype in ("convenience_fee", "platform_fee", "handling_fee", "mandatory_fee"):
+                # Mandatory fee withheld from initial listing and not previously disclosed
+                if not c.previously_disclosed:
+                    explanations.append(PriceComponentExplanation(
+                        component_type=c.component_type,
+                        label=c.label,
+                        amount=c.amount,
+                        is_mandatory=True,
+                        disclosure_stage=s.stage,
+                        disclosed_early=False,
+                        assessment_status=DarkPatternAssessmentStatus.DETECTED,
+                        assessment_reason=f"Mandatory {c.label} (₹{c.amount:,.0f}) first observed at {s.stage} and not disclosed in advertised price."
+                    ))
+                else:
+                    explanations.append(PriceComponentExplanation(
+                        component_type=c.component_type,
+                        label=c.label,
+                        amount=c.amount,
+                        is_mandatory=True,
+                        disclosure_stage=s.stage,
+                        disclosed_early=True,
+                        assessment_status=DarkPatternAssessmentStatus.EVALUATED_CLEAN,
+                        assessment_reason=f"Disclosed {c.label} (₹{c.amount:,.0f}) itemized at {s.stage}."
+                    ))
             elif ctype in ("protection", "insurance", "donation", "charity"):
                 # Optional add-ons
-                explanations.append(PriceComponentExplanation(
-                    component_type=c.component_type,
-                    label=c.label,
-                    amount=c.amount,
-                    is_mandatory=False,
-                    disclosure_stage=s.stage,
-                    disclosed_early=False,
-                    assessment_status=DarkPatternAssessmentStatus.POTENTIAL_SIGNAL,
-                    assessment_reason=f"Optional {c.label} (₹{c.amount:,.0f}) added to total at {s.stage}."
-                ))
+                if c.selected_by_default:
+                    explanations.append(PriceComponentExplanation(
+                        component_type=c.component_type,
+                        label=c.label,
+                        amount=c.amount,
+                        is_mandatory=False,
+                        disclosure_stage=s.stage,
+                        disclosed_early=False,
+                        assessment_status=DarkPatternAssessmentStatus.POTENTIAL_SIGNAL,
+                        assessment_reason=f"Pre-selected optional {c.label} (₹{c.amount:,.0f}) added at {s.stage}."
+                    ))
+                else:
+                    explanations.append(PriceComponentExplanation(
+                        component_type=c.component_type,
+                        label=c.label,
+                        amount=c.amount,
+                        is_mandatory=False,
+                        disclosure_stage=s.stage,
+                        disclosed_early=False,
+                        assessment_status=DarkPatternAssessmentStatus.EVALUATED_CLEAN,
+                        assessment_reason=f"Optional {c.label} (₹{c.amount:,.0f}) at {s.stage}."
+                    ))
             else:
                 explanations.append(PriceComponentExplanation(
                     component_type=c.component_type,
@@ -967,7 +997,7 @@ def assess_price_journey(
 
     # Check if there is unexplained price delta
     explained_sum = sum(c.amount for c in new_charges)
-    if delta_total > explained_sum and delta_total > 0:
+    if delta_total is not None and delta_total > explained_sum and delta_total > 0:
         unexplained = round(delta_total - explained_sum, 2)
         new_charges.append(PriceComponent(
             component_type="mandatory_fee",
@@ -994,15 +1024,15 @@ def assess_price_journey(
         for exp in explanations
     )
     has_only_legitimate_fees = (
-        delta_total > 0 and not has_deceptive_mandatory_fee and
-        all(exp.component_type in ("shipping", "delivery", "tax") for exp in explanations)
+        delta_total is not None and delta_total > 0 and not has_deceptive_mandatory_fee and
+        all(exp.component_type in ("shipping", "delivery", "tax") or exp.assessment_status == DarkPatternAssessmentStatus.EVALUATED_CLEAN for exp in explanations)
     )
 
-    if has_deceptive_mandatory_fee:
+    if has_deceptive_mandatory_fee and delta_total is not None:
         dark_assessment = DarkPatternAssessmentStatus.DETECTED
         is_drip = True
         explanation = (
-            f"Initial advertised price was ₹{p0:,.0f}. Final payable price escalated to ₹{p2:,.0f} "
+            f"Initial advertised price was ₹{p0:,.0f}. Final payable price escalated to ₹{p2 or p1:,.0f} "
             f"(+₹{delta_total:,.0f} / +{pct}%) due to mandatory fees concealed until late purchase stages (CCPA § 5(7))."
         )
         findings.append(Finding(
@@ -1015,18 +1045,20 @@ def assess_price_journey(
             page_state=PriceState.CHECKOUT if checkout_reached else PriceState.CART,
             ccpa_category=CCPAPattern.DRIP_PRICING,
             ccpa_regulation="CCPA_2023_SEC_5_7",
-            title=f"Drip Pricing: ₹{delta_total:,.0f} (+{pct}%) Mandatory Charges Withheld",
+            title=f"Drip Pricing Signal: Mandatory Surcharge Concealed Upfront (+₹{delta_total:,.0f})",
             explanation=explanation,
             consumer_advice="Inspect every itemized fee carefully before payment. Mandatory platform/convenience surcharges must be disclosed upfront in initial pricing under CCPA 2023.",
             remediation_hint="All non-optional mandatory fees must be incorporated into the initial advertised price.",
-            text_snippets=[f"P0 Advertised: ₹{p0:,.0f}", f"P2 Checkout: ₹{p2:,.0f}", f"Mandatory Escalation: +₹{delta_total:,.0f}"],
+            text_snippets=[f"P0 Advertised: ₹{p0:,.0f}" if p0 is not None else "P0: UNKNOWN",
+                           f"Observed Payable: ₹{p2 or p1:,.0f}" if (p2 or p1) is not None else "Payable: UNKNOWN",
+                           f"Mandatory Escalation: +₹{delta_total:,.0f}"],
             detection_methods=[DetectionMethod.PRICE_JOURNEY]
         ))
-    elif has_only_legitimate_fees:
+    elif has_only_legitimate_fees and delta_total is not None:
         dark_assessment = DarkPatternAssessmentStatus.EVALUATED_CLEAN
         is_drip = False
         explanation = f"Price increased by ₹{delta_total:,.0f} (+{pct}%) purely due to standard variable delivery charges disclosed at cart. No deceptive drip pricing detected."
-    elif not checkout_reached and delta_total == 0:
+    elif not checkout_reached and (delta_total is None or delta_total == 0):
         dark_assessment = DarkPatternAssessmentStatus.INCONCLUSIVE
         is_drip = False
         explanation = "Purchase flow evaluated through product listing; final checkout review was not reached. Mandatory fee disclosure remains inconclusive."
@@ -1039,7 +1071,7 @@ def assess_price_journey(
         stages=price_stages,
         initial_price=p0,
         cart_price=p1,
-        final_observed_price=p2,
+        final_observed_price=p2 or p1 or p0,
         delta_01=delta_01,
         delta_12=delta_12,
         delta_total=delta_total,
@@ -1157,84 +1189,20 @@ def compute_scan_coverage(stages_scanned: list[str], findings: list[Finding]) ->
     )
 
 
-# ─── Price Component Extraction ─────────────────────────────────────────────
+# ─── Price Component Extraction (Stage-Aware Semantic Delegation) ───────────────
 
-def extract_price_components(html: str, text: str) -> tuple[float, list[PriceComponent]]:
-    components = []
-    seen_labels = set()
+def extract_price_components(html: str, text: str, stage: str = "product") -> tuple[float, list[PriceComponent]]:
+    """
+    Stage-aware semantic price & component extractor.
+    Delegates to price_extractor to guarantee:
+    1. JSON-LD / itemprop="price" / semantic sale selectors for Product (P0).
+    2. Grand Total / Amount Payable / summary tables for Cart (P1) & Checkout (P2).
+    3. Explicit rejection of MRP, strikethrough, savings, discounts, and reviews.
+    4. NEVER relies on max(all_numbers).
+    """
+    from price_extractor import extract_price_and_components
+    total, components, _ = extract_price_and_components(html, text, stage=stage)
+    return total or 0.0, components
 
-    def add_comp(ctype: str, label: str, amount: float, mandatory: bool):
-        norm_key = f"{ctype}-{amount}"
-        if norm_key not in seen_labels and amount > 0:
-            seen_labels.add(norm_key)
-            components.append(PriceComponent(
-                component_type=ctype,
-                label=label,
-                amount=amount,
-                is_mandatory=mandatory,
-                disclosed_early=False
-            ))
-
-    # 1. Inspect DOM structures (fee-row, tr, div, label, li)
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        # Candidate fee elements
-        fee_elements = soup.find_all(lambda tag: tag.name in ("div", "tr", "li", "p", "label") and (
-            any(c in " ".join(tag.get("class", [])) for c in ("fee", "price", "addon", "total", "item", "late")) or
-            any(w in tag.get_text().lower() for w in ("fee", "charge", "delivery", "shipping", "insurance", "donation", "carbon", "convenience", "platform", "handling"))
-        ))
-        
-        for el in fee_elements:
-            el_text = el.get_text(separator=" ", strip=True)
-            # Limit to line items (under 200 chars)
-            if len(el_text) > 250:
-                continue
-            
-            # Find amounts inside this element
-            amounts = extract_prices_from_text(el_text)
-            if not amounts:
-                continue
-            amt = amounts[0]
-
-            el_lower = el_text.lower()
-            if any(w in el_lower for w in ("convenience fee", "platform fee", "handling fee", "booking fee", "service fee", "gateway fee")):
-                add_comp("convenience_fee", "Convenience / Platform Fee", amt, True)
-            elif any(w in el_lower for w in ("delivery", "shipping", "courier")):
-                add_comp("shipping", "Delivery Charges", amt, True)
-            elif any(w in el_lower for w in ("insurance", "travel protect", "securetrips", "warranty", "coverage")):
-                add_comp("protection", "Optional Insurance / Protection", amt, False)
-            elif any(w in el_lower for w in ("donation", "charity", "foundation", "carbon offset", "contribution", "green aviation")):
-                add_comp("donation", "Charitable / Carbon Contribution", amt, False)
-            elif "mandatory" in el_lower and amt > 0:
-                add_comp("convenience_fee", "Mandatory Booking Surcharge", amt, True)
-    except Exception:
-        pass
-
-    # 2. Regex fallback over plain text lines
-    lines = text.split("\n")
-    for line in lines:
-        line_clean = line.strip()
-        if not line_clean or len(line_clean) > 200:
-            continue
-        line_lower = line_clean.lower()
-        amounts = extract_prices_from_text(line_clean)
-        if not amounts:
-            continue
-        amt = amounts[0]
-
-        if any(w in line_lower for w in ("convenience fee", "platform fee", "handling fee", "booking fee")) and amt < 10000:
-            add_comp("convenience_fee", "Convenience / Platform Fee", amt, True)
-        elif any(w in line_lower for w in ("delivery", "shipping")) and amt < 5000:
-            add_comp("shipping", "Delivery Charges", amt, True)
-        elif any(w in line_lower for w in ("insurance", "securetrips", "protect")) and amt < 10000:
-            add_comp("protection", "Insurance / Protection Add-on", amt, False)
-        elif any(w in line_lower for w in ("carbon offset", "foundation", "donation")) and amt < 500:
-            add_comp("donation", "Donation / Carbon Contribution", amt, False)
-
-    # Total price calculation
-    prices = extract_prices_from_text(text)
-    total = max(prices) if prices else 0.0
-
-    return total, components
 
 

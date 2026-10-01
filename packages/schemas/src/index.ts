@@ -55,12 +55,17 @@ export type DarkPatternAssessmentStatus = "DETECTED" | "POTENTIAL_SIGNAL" | "EVA
 export type ActionPolicyTier = "SAFE" | "CAUTION" | "BLOCKED";
 
 export interface PriceComponent {
-  component_type: string;     // subtotal, delivery, platform_fee, convenience_fee, insurance, donation, discount, unknown
+  component_type: string;     // subtotal, delivery, platform_fee, convenience_fee, insurance, donation, discount, tax, unknown
   label: string;
   amount: number;
   is_mandatory: boolean;
   disclosed_early: boolean;
   added_in_stage?: string;    // "product", "cart", "checkout"
+  first_observed_stage?: string;
+  previously_disclosed?: boolean;
+  selected_by_default?: boolean;
+  included_in_advertised_price?: boolean;
+  is_delivery_dependent?: boolean;
 }
 
 export interface PriceComponentExplanation {
@@ -84,24 +89,27 @@ export interface PriceDelta {
 export interface PriceStage {
   stage: string;              // product, cart, checkout
   stage_label: string;        // "1. Product Listing", "2. Cart Review", "3. Checkout"
-  total: number;
+  total?: number | null;
+  is_captured: boolean;
   currency: string;
   components: PriceComponent[];
   url: string;
   screenshot_b64?: string;
+  extraction_source?: string;
+  extraction_confidence?: string;
 }
 
 export interface PriceJourney {
   stages: PriceStage[];
-  initial_price: number;         // P0
-  cart_price?: number;           // P1
-  final_observed_price: number;  // P2
+  initial_price?: number | null;         // P0
+  cart_price?: number | null;            // P1
+  final_observed_price?: number | null;  // P2
 
   // Mathematical Deltas
-  delta_01?: number;             // P1 - P0
-  delta_12?: number;             // P2 - P1
-  delta_total: number;           // P2 - P0
-  percentage_increase: number;
+  delta_01?: number | null;              // P1 - P0
+  delta_12?: number | null;              // P2 - P1
+  delta_total?: number | null;           // P2 - P0
+  percentage_increase?: number | null;
 
   // Price Change Explanations (What caused it)
   component_explanations?: PriceComponentExplanation[];

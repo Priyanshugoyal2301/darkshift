@@ -54,6 +54,7 @@ from detection_engine import (
     compute_risk_assessment, compute_scan_coverage, extract_price_components,
     assess_price_journey, classify_action_element,
 )
+from price_extractor import extract_price_and_components
 
 
 # ─── In-Memory Audit Store ──────────────────────────────────────────────────
@@ -248,21 +249,27 @@ async def execute_live_scan(scan_id: str, url: str) -> None:
             # Extract Stage 1 DOM & text
             html_p0 = await page.content()
             text_p0 = await page.evaluate("() => document.body.innerText")
-            p0, c0 = extract_price_components(html_p0, text_p0)
+            p0, c0, meta0 = extract_price_and_components(html_p0, text_p0, stage="product")
+            p0_captured = p0 is not None and p0 > 0.0
 
             price_stages.append(PriceStage(
                 stage="product",
                 stage_label="1. Product Listing",
                 total=p0,
+                is_captured=p0_captured,
+                currency="INR",
                 components=c0,
                 url=page.url,
-                screenshot_b64=screenshot_b64
+                screenshot_b64=screenshot_b64,
+                extraction_source=meta0.source,
+                extraction_confidence=meta0.confidence
             ))
 
             logs.append(AuditLogEntry(
                 timestamp=format_ts(),
                 stage="STAGE_1_CAPTURED",
-                message=f"Product page loaded: '{target_meta.title[:50]}' | Initial Price P0: ₹{p0:,.0f}"
+                message=(f"Product page loaded: '{target_meta.title[:50]}' | Advertised Price P0: ₹{p0:,.0f} [{meta0.source}]"
+                         if p0_captured else f"Product page loaded: '{target_meta.title[:50]}' | Advertised Price P0: UNKNOWN (Not captured)")
             ))
 
             # Run detection rules on Product page
@@ -352,10 +359,8 @@ async def execute_live_scan(scan_id: str, url: str) -> None:
                         cart_url = page.url
                         html_p1 = await page.content()
                         text_p1 = await page.evaluate("() => document.body.innerText")
-                        p1, c1 = extract_price_components(html_p1, text_p1)
-
-                        if p1 == 0.0 and p0 > 0.0:
-                            p1 = p0
+                        p1, c1, meta1 = extract_price_and_components(html_p1, text_p1, stage="cart")
+                        p1_captured = p1 is not None and p1 > 0.0
 
                         stages_scanned.append("cart")
 
@@ -371,15 +376,27 @@ async def execute_live_scan(scan_id: str, url: str) -> None:
                             stage="cart",
                             stage_label="2. Cart Review",
                             total=p1,
+                            is_captured=p1_captured,
+                            currency="INR",
                             components=c1,
                             url=cart_url,
-                            screenshot_b64=ss_cart
+                            screenshot_b64=ss_cart,
+                            extraction_source=meta1.source,
+                            extraction_confidence=meta1.confidence
                         ))
+
+                        if p1_captured and p0_captured:
+                            delta_str = f" (Δ01: +₹{p1 - p0:,.0f})" if p1 >= p0 else f" (Δ01: -₹{p0 - p1:,.0f})"
+                            msg = f"Cart review reached: P1: ₹{p1:,.0f}{delta_str} [{meta1.source}]"
+                        elif p1_captured:
+                            msg = f"Cart review reached: P1: ₹{p1:,.0f} [{meta1.source}]"
+                        else:
+                            msg = f"Cart review reached: P1: UNKNOWN (Price not captured) [{meta1.source}]"
 
                         logs.append(AuditLogEntry(
                             timestamp=format_ts(),
                             stage="STAGE_2_CAPTURED",
-                            message=f"Cart review reached: P1: ₹{p1:,.0f} (Δ01: +₹{p1 - p0:,.0f})"
+                            message=msg
                         ))
 
                         # Run detection rules on Cart page
@@ -452,9 +469,8 @@ async def execute_live_scan(scan_id: str, url: str) -> None:
                                         message="Authentication barrier encountered. Stopped before credential entry."
                                     ))
                                 else:
-                                    p2, c2 = extract_price_components(html_p2, text_p2)
-                                    if p2 == 0.0:
-                                        p2 = p1
+                                    p2, c2, meta2 = extract_price_and_components(html_p2, text_p2, stage="checkout")
+                                    p2_captured = p2 is not None and p2 > 0.0
 
                                     stages_scanned.append("checkout")
                                     checkout_reached = True
@@ -471,15 +487,27 @@ async def execute_live_scan(scan_id: str, url: str) -> None:
                                         stage="checkout",
                                         stage_label="3. Checkout Review",
                                         total=p2,
+                                        is_captured=p2_captured,
+                                        currency="INR",
                                         components=c2,
                                         url=co_url,
-                                        screenshot_b64=ss_co
+                                        screenshot_b64=ss_co,
+                                        extraction_source=meta2.source,
+                                        extraction_confidence=meta2.confidence
                                     ))
+
+                                    if p2_captured and p0_captured:
+                                        delta_str = f" (Total Δ: +₹{p2 - p0:,.0f})" if p2 >= p0 else f" (Total Δ: -₹{p0 - p2:,.0f})"
+                                        msg = f"Final checkout observed: P2: ₹{p2:,.0f}{delta_str} [{meta2.source}]"
+                                    elif p2_captured:
+                                        msg = f"Final checkout observed: P2: ₹{p2:,.0f} [{meta2.source}]"
+                                    else:
+                                        msg = f"Final checkout observed: P2: UNKNOWN (Price not captured) [{meta2.source}]"
 
                                     logs.append(AuditLogEntry(
                                         timestamp=format_ts(),
                                         stage="STAGE_3_CAPTURED",
-                                        message=f"Final checkout observed: P2: ₹{p2:,.0f} (Total Δ: +₹{p2 - p0:,.0f})"
+                                        message=msg
                                     ))
 
                                     f_stage3, _ = analyze_page(co_url, html_p2, text_p2)

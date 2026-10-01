@@ -102,12 +102,17 @@ class ActionClassification(BaseModel):
 
 
 class PriceComponent(BaseModel):
-    component_type: str = "unknown"  # subtotal, delivery, platform_fee, convenience_fee, insurance, donation, discount, unknown
+    component_type: str = "unknown"  # subtotal, delivery, platform_fee, convenience_fee, insurance, donation, discount, tax, unknown
     label: str
     amount: float
     is_mandatory: bool = True
     disclosed_early: bool = False
     added_in_stage: Optional[str] = None
+    first_observed_stage: Optional[str] = None
+    previously_disclosed: bool = False
+    selected_by_default: bool = False
+    included_in_advertised_price: bool = False
+    is_delivery_dependent: bool = False
 
 
 class PriceComponentExplanation(BaseModel):
@@ -124,24 +129,27 @@ class PriceComponentExplanation(BaseModel):
 class PriceStage(BaseModel):
     stage: str                       # product, cart, checkout
     stage_label: str                 # "1. Product Listing", "2. Cart Review", "3. Checkout"
-    total: float
+    total: Optional[float] = None
+    is_captured: bool = True
     currency: str = "INR"
     components: list[PriceComponent] = []
     url: str = ""
     screenshot_b64: Optional[str] = None
+    extraction_source: Optional[str] = None
+    extraction_confidence: Optional[str] = None
 
 
 class PriceJourney(BaseModel):
     stages: list[PriceStage] = []
-    initial_price: float = 0.0
+    initial_price: Optional[float] = None
     cart_price: Optional[float] = None
-    final_observed_price: float = 0.0
+    final_observed_price: Optional[float] = None
 
     # Mathematical Deltas
     delta_01: Optional[float] = None
     delta_12: Optional[float] = None
-    delta_total: float = 0.0
-    percentage_increase: float = 0.0
+    delta_total: Optional[float] = None
+    percentage_increase: Optional[float] = None
 
     # Explanations (What caused it)
     component_explanations: list[PriceComponentExplanation] = []
