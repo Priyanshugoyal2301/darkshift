@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, use } from "react";
+import { useEffect, useState, use } from "react";
 import Link from "next/link";
 import { Shield, ChevronDown, ChevronRight, Check, AlertTriangle, ArrowRight, MousePointer2 } from "lucide-react";
 
@@ -43,33 +43,36 @@ export default function DualModeAuditPage({ params }: { params: Promise<{ id: st
   // Consumer State
   const [expandedFindings, setExpandedFindings] = useState<Record<string, boolean>>({});
 
-  const fetchScan = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/scan/${scanId}`);
-      if (!res.ok) return;
-      const data: ScanResult = await res.json();
-      setScan(data);
-      if (!selectedFindingId && data.findings?.length > 0) {
-        setSelectedFindingId(data.findings[0].id);
-      }
-    } catch (err) { console.error(err); }
-  }, [scanId, selectedFindingId]);
-
+  // Poll every 1.5s; the interval clears itself once scan is done/error.
   useEffect(() => {
-    fetchScan();
-    if (!scan || scan.status === "queued" || scan.status === "running") {
-      const interval = setInterval(() => {
-        setScan(prev => {
-          if (prev?.status === "done" || prev?.status === "error") {
-            clearInterval(interval);
-          }
-          return prev;
-        });
-        fetchScan();
-      }, 1500);
-      return () => clearInterval(interval);
+    let stopped = false;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/scan/${scanId}`);
+        if (!res.ok) return;
+        const data: ScanResult = await res.json();
+        setScan(data);
+        if (!selectedFindingId && data.findings?.length > 0) {
+          setSelectedFindingId(data.findings[0].id);
+        }
+        if ((data.status === "done" || data.status === "error") && intervalId) {
+          clearInterval(intervalId);
+        }
+      } catch { /* ignore */ }
+    };
+
+    poll();
+    if (!stopped) {
+      intervalId = setInterval(poll, 1500);
     }
-  }, [fetchScan, scan?.status]);
+    return () => {
+      stopped = true;
+      if (intervalId) clearInterval(intervalId);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanId]);
 
   const findings = scan?.findings || [];
   const risk = scan?.risk_assessment;
@@ -125,6 +128,24 @@ export default function DualModeAuditPage({ params }: { params: Promise<{ id: st
             </div>
           </div>
         </header>
+
+        {/* Scanning Progress Bar — shown while scan is in-progress */}
+        {(!scan || scan.status === "queued" || scan.status === "running") && (
+          <div className="border-b border-gray-200 bg-white px-6 py-4">
+            <div className="max-w-6xl mx-auto">
+              <div className="flex items-center gap-3 mb-2">
+                <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                <span className="text-sm font-medium text-gray-700">
+                  {!scan ? "Connecting to inspection engine…" : "Tracing purchase journey…"}
+                </span>
+              </div>
+              <div className="w-full h-1 bg-gray-100 rounded-full overflow-hidden">
+                <div className="h-full bg-blue-500 rounded-full animate-[scan-progress_2s_ease-in-out_infinite]"
+                  style={{ width: "60%", animation: "pulse 1.5s ease-in-out infinite" }} />
+              </div>
+            </div>
+          </div>
+        )}
 
         <main className="max-w-6xl mx-auto px-6 py-12">
           {/* Asymmetrical Layout */}
