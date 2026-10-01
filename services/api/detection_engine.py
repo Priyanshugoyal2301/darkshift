@@ -134,7 +134,22 @@ PATTERN_META = {
 
 PATTERNS = {
     # False urgency
-    "COUNTDOWN_TIMER": re.compile(r'\b\d{1,2}:\d{2}(:\d{2})?\b'),
+    # Matches countdown timers but NOT ordinary AM/PM times like "06:15 AM".
+    # Three alternations (all with re.I | re.S):
+    #   A: digits followed/preceded by a unit word (mins, secs, remaining, left, to go, hrs)
+    #   B: a trigger label (expires, ends, hurry, timer, countdown) anywhere in the same text node, then HH:MM
+    #   C: HH:MM not followed by AM/PM and with a countdown keyword elsewhere in the same text fragment
+    "COUNTDOWN_TIMER": re.compile(
+        r'(?:'
+        r'\d{1,2}:\d{2}(?::\d{2})?\s*(?:mins?|secs?|seconds?|remaining|left|to\s+go|hrs?)'  # A-forward
+        r'|(?:min(?:ute)?s?|sec(?:ond)?s?|hrs?|hours?)\s+\d{1,2}:\d{2}(?::\d{2})?'         # A-backward
+        r'|(?:expire|end|hurry|timer|countdown|price.lock|locked)\S*\s[^\n]{0,60}\d{1,2}:\d{2}(?::\d{2})?' # B
+        r')',
+        re.I,
+    ),
+    # Simpler pattern used only when a timer DOM class/id already confirms context
+    "COUNTDOWN_TIMER_STRICT_DOM": re.compile(r'\b\d{1,2}:\d{2}(:\d{2})?\b'),
+
     "SCARCITY": re.compile(
         r'\b(only\s+\d+\s*(left|remaining|in stock|available)|just\s+\d+\s*(left|remaining)|'
         r'low\s+stock|almost\s+gone|selling\s+out|nearly\s+sold\s+out)\b',
@@ -260,20 +275,35 @@ def run_rule_engine(soup: BeautifulSoup, text: str, url: str) -> list[PartialFin
     page_state = classify_page_state(url, text)
 
     # ── Countdown timers ──────────────────────────────────────────────────────
+    # Phase 1: High-confidence — elements specifically classed/attributed as timers.
+    # Use lenient STRICT_DOM pattern here because the DOM class alone confirms intent.
+    TIME_OF_DAY_SKIP = re.compile(r'\b\d{1,2}:\d{2}\s*(?:AM|PM)\b', re.I)
+    COUNTDOWN_CONTEXT = re.compile(
+        r'\b(remaining|left|to go|expire|countdown|timer|hurry|limited\s+time|ends?\s+in|only|min|sec)\b',
+        re.I
+    )
     timer_els = soup.select("[class*='countdown'],[class*='timer'],[id*='countdown'],[id*='timer'],[data-countdown]")
     timer_texts = []
     for el in timer_els:
         t = el.get_text(separator=" ", strip=True)
-        if t and PATTERNS["COUNTDOWN_TIMER"].search(t) and is_user_facing_evidence(t):
+        # Even in a classed timer element, skip if it looks like AM/PM scheduling (e.g. departure board)
+        if t and PATTERNS["COUNTDOWN_TIMER_STRICT_DOM"].search(t) and is_user_facing_evidence(t):
+            if TIME_OF_DAY_SKIP.search(t) and not COUNTDOWN_CONTEXT.search(t):
+                # Matches "06:15 AM" style without any countdown context words → skip
+                continue
             timer_texts.append(t[:100])
 
-    # Also search clean text nodes (strictly visible text, never code)
+    # Phase 2: Fallback — scan all visible text nodes using the stricter COUNTDOWN_TIMER pattern
+    # that requires countdown-context words adjacent to the digits.
     if not timer_texts:
         for el in soup.find_all(string=PATTERNS["COUNTDOWN_TIMER"]):
             parent_name = el.parent.name if el.parent else ""
             if parent_name in ("script", "style", "noscript", "template", "svg", "code", "pre"):
                 continue
             s = str(el).strip()
+            # Skip scheduling / itinerary text (departure times, event start times)
+            if TIME_OF_DAY_SKIP.search(s) and not COUNTDOWN_CONTEXT.search(s):
+                continue
             if s and is_user_facing_evidence(s):
                 timer_texts.append(s[:100])
 
