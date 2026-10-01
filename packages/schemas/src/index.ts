@@ -439,6 +439,21 @@ export interface AnalyzeRequest {
   visible_text: string;
   prices?: PricePoint[];
   page_state?: PriceState;
+  title?: string;
+}
+
+export interface ExtensionScanResult {
+  scan_id: string;
+  url: string;
+  status: ScanStatus;
+  findings: Finding[];
+  risk_assessment: RiskAssessment;
+  transparency_score: TransparencyScore;
+  scan_coverage: ScanCoverage;
+  findings_by_pattern: Partial<Record<CCPAPattern, number>>;
+  target_metadata?: TargetMetadata;
+  started_at: number;
+  completed_at: number;
 }
 
 export interface ScanSummary {

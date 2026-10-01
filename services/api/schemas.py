@@ -487,10 +487,26 @@ class ScanResponse(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     url: str
-    dom: str
-    visible_text: str
+    dom: str = ""
+    visible_text: str = ""
+    html: Optional[str] = None
     prices: list[PricePoint] = []
     page_state: PriceState = PriceState.UNKNOWN
+    title: Optional[str] = None
+
+
+class ExtensionScanResult(BaseModel):
+    scan_id: str
+    url: str
+    status: ScanStatus = ScanStatus.DONE
+    findings: list[Finding] = []
+    risk_assessment: RiskAssessment
+    transparency_score: TransparencyScore
+    scan_coverage: ScanCoverage
+    findings_by_pattern: dict[str, int] = {}
+    target_metadata: Optional[TargetMetadata] = None
+    started_at: float = Field(default_factory=time.time)
+    completed_at: float = Field(default_factory=time.time)
 
 
 class ScanSummary(BaseModel):

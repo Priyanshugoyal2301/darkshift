@@ -12,7 +12,7 @@
     "dev:web": "npm run dev --workspace=apps/web",
     "build:extension": "npm run build --workspace=apps/extension",
     "build:web": "npm run build --workspace=apps/web",
-    "build:packages": "npm run build --workspace=packages/rules && npm run build --workspace=packages/schemas",
+    "build:packages": "npm run build --workspace=packages/schemas && npm run build --workspace=packages/rules",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present"
   },
