@@ -220,6 +220,28 @@ export default function DarkShieldHomePage() {
         }
       })
       .catch((err) => console.error("Could not fetch scans:", err));
+
+    // Handle Extension Handoff
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const scanId = params.get("scanId") || params.get("scan_id");
+      const paramUrl = params.get("url");
+      const auto = params.get("auto");
+
+      if (scanId) {
+        router.push(`/scan/${scanId}`);
+        return;
+      }
+
+      if (paramUrl) {
+        setTargetUrl(paramUrl);
+        if (auto === "true" || auto === "1") {
+          setTimeout(() => {
+            handleStartAudit(paramUrl);
+          }, 300);
+        }
+      }
+    }
   }, []);
 
   const handleStartCompare = async (customQuery?: string) => {

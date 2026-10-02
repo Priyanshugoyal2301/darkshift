@@ -32,6 +32,8 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 from typing import Optional
@@ -55,7 +57,7 @@ from schemas import (
     AuditLogEntry, TargetMetadata,
     ConfidenceTier, CoverageStatus, RiskAssessment, ScanCoverage,
     PatternCoverageItem, PriceComponent, PriceStage, ActionPolicyTier,
-    ScanSummary,
+    ScanSummary, ExtensionScanResult,
     # VP2
     CompareRequest, CompareResponse, CompareResult, CompareStatus,
     ProductSearchRequest, Listing, ListingStatus,
@@ -337,6 +339,7 @@ async def start_scan(request: ScanRequest, background_tasks: BackgroundTasks):
 
 
 @app.get("/api/scan/{scan_id}", response_model=ScanResult)
+@app.get("/api/scans/{scan_id}", response_model=ScanResult)
 async def get_scan(scan_id: str):
     scan = scan_store.get(scan_id)
     if not scan:
@@ -520,6 +523,89 @@ async def list_marketplaces():
         }
         for k, v in MARKETPLACE_REGISTRY.items()
     ]
+
+
+@app.post("/api/extension/analyze", response_model=ExtensionScanResult)
+async def analyze_extension_page(request: AnalyzeRequest):
+    try:
+        safe_url = validate_url_security(str(request.url).strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    now = time.time()
+    raw_html = request.dom or request.html or ""
+    vis_text = request.visible_text or ""
+    if not vis_text and raw_html:
+        soup = BeautifulSoup(raw_html, "html.parser")
+        vis_text = soup.get_text(separator=" ", strip=True)
+
+    findings, price_journey = analyze_page(
+        url=safe_url,
+        html=raw_html,
+        visible_text=vis_text,
+    )
+
+    stage = request.page_state.value if hasattr(request.page_state, "value") else str(request.page_state)
+    if stage not in ("product", "cart", "checkout", "payment"):
+        stage = "product"
+
+    risk_assessment = compute_risk_assessment(findings=findings, stages_scanned=[stage])
+    transparency_score = compute_transparency_score(findings)
+    scan_coverage = compute_scan_coverage(stages_scanned=[stage], findings=findings)
+
+    findings_by_pattern: dict[str, int] = {}
+    for f in findings:
+        p_name = f.pattern.value if hasattr(f.pattern, "value") else str(f.pattern)
+        findings_by_pattern[p_name] = findings_by_pattern.get(p_name, 0) + 1
+
+    scan_id = f"ext-{uuid.uuid4().hex[:10]}"
+    display_title = request.title or (urlparse(safe_url).hostname or "Target Site")
+    target_meta = TargetMetadata(
+        title=display_title,
+        final_url=safe_url,
+    )
+
+    full_scan = ScanResult(
+        scan_id=scan_id,
+        url=safe_url,
+        mode=ScanMode.EXTENSION,
+        status=ScanStatus.DONE,
+        started_at=now,
+        completed_at=now,
+        pages_analyzed=1,
+        interaction_states=1,
+        findings=findings,
+        risk_assessment=risk_assessment,
+        scan_coverage=scan_coverage,
+        transparency_score=transparency_score,
+        price_journey=price_journey,
+        findings_by_pattern=findings_by_pattern,
+        target_metadata=target_meta,
+        audit_logs=[
+            AuditLogEntry(
+                timestamp=format_ts(),
+                stage="EXTENSION_AUDIT",
+                message=f"Extension real-time analysis: {len(findings)} dark pattern(s) identified. Risk: {risk_assessment.risk_level} ({risk_assessment.risk_score}/100)"
+            )
+        ]
+    )
+
+    scan_store[scan_id] = full_scan
+
+    return ExtensionScanResult(
+        scan_id=scan_id,
+        url=safe_url,
+        status=ScanStatus.DONE,
+        findings=findings,
+        risk_assessment=risk_assessment,
+        transparency_score=transparency_score,
+        scan_coverage=scan_coverage,
+        findings_by_pattern=findings_by_pattern,
+        target_metadata=target_meta,
+        started_at=now,
+        completed_at=now,
+    )
+
 
 if __name__ == "__main__":
     import uvicorn

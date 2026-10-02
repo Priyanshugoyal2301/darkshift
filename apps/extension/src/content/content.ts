@@ -1,213 +1,300 @@
 /**
- * DarkShield — Content Script
+ * DarkShield — Content Script (Live Webpage Inspector)
  *
- * Runs in the context of every webpage.
+ * Runs inside the context of user-visited webpages.
  * Responsibilities:
- *  1. Run Layer 2 (Analyzer) + Layer 3 (Detector) on page load
- *  2. Set up MutationObserver for dynamic DOM changes
- *  3. Track page state transitions (product → cart → checkout)
- *  4. Inject highlight overlay for findings
- *  5. Communicate findings to background service worker
+ *  1. Performs Level 1 Fast Local Analysis of DOM, text, CTAs, and prices
+ *  2. Sends sanitized signals to background service worker for Level 2 analysis
+ *  3. Injects non-destructive highlight overlays with interactive DarkShield tooltips
+ *  4. Debounced MutationObserver for dynamic modals, popups, and price changes
+ *  5. Strict Privacy: never captures passwords, credit card inputs, or keystrokes
  */
 
-import { runFullDetection, PriceJourneyTracker, CartDiffTracker } from "../detector/detection-engine";
-import { classifyDetectionResult } from "../classifier/classifier";
-import { capturePageState, classifyPageState } from "../analyzer/page-analyzer";
-import type { Finding, ScanResult } from "@darkshield/schemas";
+import {
+  PriceJourneyTracker,
+  runLocalFastCheck,
+} from "../detector/detection-engine";
+import {
+  classifyPartialFinding,
+  computeCalibratedRiskAssessment,
+  computeTransparencyScore,
+} from "../classifier/classifier";
+import {
+  classifyPageState,
+  getSanitizedVisibleText,
+  getSanitizedDOMSnippet,
+} from "../analyzer/page-analyzer";
+import type { Finding, ExtensionScanResult } from "@darkshield/schemas";
 
-// ─── State ────────────────────────────────────────────────────────────────────
+// ─── Local State ──────────────────────────────────────────────────────────────
 
 const priceTracker = new PriceJourneyTracker();
-const cartTracker = new CartDiffTracker();
-let currentPageState = classifyPageState();
-let scanTimeout: ReturnType<typeof setTimeout> | null = null;
-let lastUrl = window.location.href;
+let scanDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let activeHighlightElements: HTMLElement[] = [];
+let autoDismissTimer: ReturnType<typeof setTimeout> | null = null;
 
-// ─── Mutation Observer ────────────────────────────────────────────────────────
+// ─── Level 1 Local Inspection ─────────────────────────────────────────────────
 
-const observer = new MutationObserver((mutations) => {
-  // Debounce: wait 800ms after last mutation before re-scanning
-  if (scanTimeout) clearTimeout(scanTimeout);
-  scanTimeout = setTimeout(() => {
-    const newState = classifyPageState();
-    const urlChanged = window.location.href !== lastUrl;
-
-    if (urlChanged || newState !== currentPageState) {
-      lastUrl = window.location.href;
-      currentPageState = newState;
-      runScan("navigation");
-    } else {
-      // Quick DOM-only rescan for dynamic content (popups, modals)
-      const hasSignificantChange = mutations.some(m =>
-        m.addedNodes.length > 0 &&
-        Array.from(m.addedNodes).some(n =>
-          n instanceof HTMLElement &&
-          (n.tagName === "DIALOG" ||
-            n.classList.contains("modal") ||
-            n.classList.contains("popup") ||
-            n.classList.contains("overlay"))
-        )
-      );
-      if (hasSignificantChange) runScan("modal");
-    }
-  }, 800);
-});
-
-observer.observe(document.body, {
-  childList: true,
-  subtree: true,
-  characterData: false,
-  attributes: false,
-});
-
-// ─── Main Scan Function ───────────────────────────────────────────────────────
-
-async function runScan(trigger: string = "initial") {
+function runPageInspection(reason: string = "initial") {
   try {
-    // Capture price snapshot for this state
+    // Capture price point for this state
     priceTracker.captureSnapshot();
 
-    // Run detection
-    const detection = runFullDetection(priceTracker, cartTracker);
-    const classified = classifyDetectionResult(detection);
+    // 1. Run Level 1 Local Fast Analysis
+    const localCheck = runLocalFastCheck(priceTracker);
 
-    const result: Partial<ScanResult> = {
+    const findings: Finding[] = localCheck.findings.map(classifyPartialFinding);
+    const riskAssessment = computeCalibratedRiskAssessment(findings);
+    const transparencyScore = computeTransparencyScore(findings);
+
+    const findings_by_pattern: Record<string, number> = {};
+    for (const f of findings) {
+      findings_by_pattern[f.pattern] = (findings_by_pattern[f.pattern] || 0) + 1;
+    }
+
+    const localResult: ExtensionScanResult = {
+      scan_id: `loc-${Date.now().toString(36)}`,
       url: window.location.href,
-      mode: "extension",
       status: "done",
-      started_at: Date.now(),
-      completed_at: Date.now(),
-      findings: classified.findings,
-      transparency_score: classified.transparency_score,
-      findings_by_pattern: classified.findings_by_pattern,
-      pages_analyzed: 1,
-      interaction_states: priceTracker["snapshots"]?.length || 1,
+      findings,
+      risk_assessment: riskAssessment,
+      transparency_score: transparencyScore,
+      scan_coverage: {
+        stages_scanned: [classifyPageState()],
+        checkout_reached: classifyPageState() === "checkout",
+        coverage_score: 50,
+        items: [],
+      },
+      findings_by_pattern,
+      target_metadata: {
+        title: document.title || "Target Site",
+        final_url: window.location.href,
+      },
+      started_at: Date.now() / 1000,
+      completed_at: Date.now() / 1000,
     };
 
-    // Highlight findings on page
-    if (classified.findings.length > 0) {
-      injectHighlights(classified.findings);
-    }
-
-    // Send to background worker
+    // 2. Transmit structured, sanitized payload to background worker
     chrome.runtime.sendMessage({
-      type: "SCAN_RESULT",
-      payload: result,
-      trigger,
+      type: "LEVEL_1_PAGE_SIGNALS",
+      payload: {
+        url: window.location.href,
+        title: document.title || "Target Site",
+        dom: getSanitizedDOMSnippet(),
+        visible_text: getSanitizedVisibleText(),
+        page_state: classifyPageState(),
+        localResult,
+        hasSuspiciousSignals: localCheck.hasSuspiciousSignals,
+        reason,
+      },
     });
-
-    // Update badge
-    const count = classified.findings.length;
-    chrome.runtime.sendMessage({
-      type: "UPDATE_BADGE",
-      count,
-      score: classified.transparency_score.total,
-    });
-
   } catch (err) {
-    console.error("[DarkShield] Scan error:", err);
+    // Content script inspection safety boundary
   }
 }
 
-// ─── Highlight Overlay ────────────────────────────────────────────────────────
+// ─── In-Page Highlight Overlay & Floating Tooltip ─────────────────────────────
 
-const SEVERITY_COLORS: Record<string, string> = {
-  high: "rgba(239, 68, 68, 0.25)",    // red
-  medium: "rgba(251, 191, 36, 0.25)", // amber
-  low: "rgba(59, 130, 246, 0.25)",    // blue
-};
+function clearHighlights() {
+  if (autoDismissTimer) {
+    clearTimeout(autoDismissTimer);
+    autoDismissTimer = null;
+  }
+  activeHighlightElements.forEach(el => el.remove());
+  activeHighlightElements = [];
+}
 
-const SEVERITY_BORDER: Record<string, string> = {
-  high: "#ef4444",
-  medium: "#f59e0b",
-  low: "#3b82f6",
-};
+function highlightFindingElement(finding: Finding) {
+  clearHighlights();
 
-let injectedHighlights: HTMLElement[] = [];
+  // 1. Locate DOM element
+  let targetElement: HTMLElement | null = null;
 
-function injectHighlights(findings: Finding[]) {
-  // Remove old highlights
-  injectedHighlights.forEach(el => el.remove());
-  injectedHighlights = [];
-
-  for (const finding of findings) {
-    if (!finding.dom_evidence) continue;
-
-    for (const evidence of finding.dom_evidence) {
-      const target = document.querySelector<HTMLElement>(evidence.selector);
-      if (!target || !evidence.visible) continue;
-
-      const rect = target.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) continue;
-
-      const overlay = document.createElement("div");
-      overlay.setAttribute("data-darkshield", "highlight");
-      overlay.setAttribute("data-finding-id", finding.id);
-      overlay.setAttribute("data-pattern", finding.pattern);
-
-      Object.assign(overlay.style, {
-        position: "fixed",
-        left: `${rect.left}px`,
-        top: `${rect.top}px`,
-        width: `${rect.width}px`,
-        height: `${rect.height}px`,
-        backgroundColor: SEVERITY_COLORS[finding.severity],
-        border: `2px solid ${SEVERITY_BORDER[finding.severity]}`,
-        borderRadius: "4px",
-        zIndex: "999998",
-        pointerEvents: "none",
-        boxSizing: "border-box",
-        transition: "opacity 0.3s ease",
-      });
-
-      // Tooltip label
-      const label = document.createElement("div");
-      Object.assign(label.style, {
-        position: "absolute",
-        top: "-22px",
-        left: "0",
-        backgroundColor: SEVERITY_BORDER[finding.severity],
-        color: "#fff",
-        fontSize: "11px",
-        fontWeight: "600",
-        padding: "2px 6px",
-        borderRadius: "3px",
-        whiteSpace: "nowrap",
-        fontFamily: "system-ui, -apple-system, sans-serif",
-        letterSpacing: "0.3px",
-      });
-      label.textContent = `⚠ ${finding.title}`;
-      overlay.appendChild(label);
-
-      document.body.appendChild(overlay);
-      injectedHighlights.push(overlay);
+  if (finding.dom_evidence && finding.dom_evidence.length > 0) {
+    for (const ev of finding.dom_evidence) {
+      if (ev.selector) {
+        try {
+          const el = document.querySelector<HTMLElement>(ev.selector);
+          if (el && el.offsetWidth > 0 && el.offsetHeight > 0) {
+            targetElement = el;
+            break;
+          }
+        } catch {
+          // invalid selector syntax fallback
+        }
+      }
     }
   }
+
+  // Fallback: search for snippet text
+  if (!targetElement && finding.text_snippets && finding.text_snippets.length > 0) {
+    const rawSnippet = finding.text_snippets[0].replace(/^(Timer|Scarcity|Deadline|Social proof|Pre-selected|Decline text|Wording|Terms|Primary):\s*"?/i, "").replace(/"$/, "").trim();
+    if (rawSnippet.length >= 4) {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        if (node.textContent && node.textContent.includes(rawSnippet)) {
+          if (node.parentElement && node.parentElement.offsetWidth > 0) {
+            targetElement = node.parentElement;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  if (!targetElement) return;
+
+  // 2. Scroll into view smoothly
+  targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
+
+  // 3. Create Highlight Box
+  const rect = targetElement.getBoundingClientRect();
+  const highlightBox = document.createElement("div");
+  highlightBox.className = `darkshield-highlight-box severity-${finding.severity || "high"}`;
+
+  Object.assign(highlightBox.style, {
+    position: "absolute",
+    left: `${rect.left + window.scrollX - 4}px`,
+    top: `${rect.top + window.scrollY - 4}px`,
+    width: `${rect.width + 8}px`,
+    height: `${rect.height + 8}px`,
+    zIndex: "2147483640",
+  });
+
+  // 4. Create Floating Tooltip
+  const tooltip = document.createElement("div");
+  tooltip.className = "darkshield-tooltip-container";
+
+  // Calculate tooltip placement (above or below)
+  const placeAbove = rect.top > 220;
+  const tooltipTop = placeAbove
+    ? rect.top + window.scrollY - 180
+    : rect.bottom + window.scrollY + 10;
+  const tooltipLeft = Math.max(10, Math.min(window.innerWidth - 350, rect.left + window.scrollX));
+
+  Object.assign(tooltip.style, {
+    position: "absolute",
+    left: `${tooltipLeft}px`,
+    top: `${tooltipTop}px`,
+  });
+
+  const confPercent = Math.round((finding.confidence || 0.85) * 100);
+  const snippetText = finding.text_snippets?.[0] || finding.title;
+
+  tooltip.innerHTML = `
+    <div class="darkshield-tooltip-header">
+      <span class="darkshield-tooltip-badge">🛡️ DarkShield Evidence</span>
+      <button class="darkshield-tooltip-close" title="Dismiss highlight">✕</button>
+    </div>
+    <div class="darkshield-tooltip-title">${escapeHTML(finding.title)}</div>
+    <div class="darkshield-tooltip-confidence">
+      ${confPercent}% Confidence · ${finding.confidence_tier || 'HIGH'} Tier · ${escapeHTML(finding.ccpa_regulation || 'CCPA 2023')}
+    </div>
+    <div class="darkshield-tooltip-evidence">"${escapeHTML(snippetText)}"</div>
+    <div class="darkshield-tooltip-explanation">${escapeHTML(finding.explanation)}</div>
+    <button class="darkshield-tooltip-dismiss-btn">Dismiss Highlight</button>
+  `;
+
+  // Attach event listeners
+  const closeBtn = tooltip.querySelector(".darkshield-tooltip-close");
+  const dismissBtn = tooltip.querySelector(".darkshield-tooltip-dismiss-btn");
+
+  closeBtn?.addEventListener("click", clearHighlights);
+  dismissBtn?.addEventListener("click", clearHighlights);
+
+  document.body.appendChild(highlightBox);
+  document.body.appendChild(tooltip);
+
+  activeHighlightElements.push(highlightBox, tooltip);
+
+  // Auto-dismiss after 15 seconds
+  autoDismissTimer = setTimeout(() => {
+    clearHighlights();
+  }, 15000);
 }
 
-// ─── Message Listener ─────────────────────────────────────────────────────────
+function escapeHTML(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+// ─── Dynamic DOM Observer (Debounced) ─────────────────────────────────────────
+
+const observer = new MutationObserver((mutations) => {
+  if (scanDebounceTimer) clearTimeout(scanDebounceTimer);
+
+  scanDebounceTimer = setTimeout(() => {
+    // Check if added nodes contain modals, popups, or pricing components
+    const hasMeaningfulAddition = mutations.some(m =>
+      Array.from(m.addedNodes).some(node => {
+        if (!(node instanceof HTMLElement)) return false;
+        const tag = node.tagName.toLowerCase();
+        const classes = (node.className && typeof node.className === "string" ? node.className : "").toLowerCase();
+        return (
+          tag === "dialog" ||
+          classes.includes("modal") ||
+          classes.includes("popup") ||
+          classes.includes("drawer") ||
+          classes.includes("cart") ||
+          classes.includes("price") ||
+          classes.includes("checkout")
+        );
+      })
+    );
+
+    if (hasMeaningfulAddition) {
+      runPageInspection("dynamic_content_mutation");
+    }
+  }, 750);
+});
+
+// ─── Chrome Message Listener ──────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === "FORCE_SCAN") {
-    runScan("popup_request");
+  if (message.type === "TRIGGER_CONTENT_SCAN") {
+    runPageInspection("manual_trigger");
     sendResponse({ status: "scanning" });
+    return true;
   }
-  if (message.type === "CLEAR_HIGHLIGHTS") {
-    injectedHighlights.forEach(el => el.remove());
-    injectedHighlights = [];
+
+  if (message.type === "INJECT_ELEMENT_HIGHLIGHT") {
+    if (message.finding) {
+      highlightFindingElement(message.finding);
+    }
+    sendResponse({ status: "highlighted" });
+    return true;
+  }
+
+  if (message.type === "CLEAR_ALL_HIGHLIGHTS") {
+    clearHighlights();
     sendResponse({ status: "cleared" });
+    return true;
   }
-  if (message.type === "GET_PAGE_STATE") {
-    sendResponse({
-      url: window.location.href,
-      state: classifyPageState(),
-      prices: priceTracker["snapshots"]?.length || 0,
-    });
-  }
+
   return true;
 });
 
-// ─── Initial Scan ─────────────────────────────────────────────────────────────
+// ─── Initialize ───────────────────────────────────────────────────────────────
 
-// Slight delay to allow dynamic content to settle
-setTimeout(() => runScan("initial"), 1500);
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => {
+    setTimeout(() => runPageInspection("initial_dom_ready"), 800);
+  });
+} else {
+  setTimeout(() => runPageInspection("initial_idle"), 800);
+}
+
+// Start observing mutations once body is present
+if (document.body) {
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: false,
+    characterData: false,
+  });
+}

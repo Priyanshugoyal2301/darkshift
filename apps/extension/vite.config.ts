@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import { resolve } from "path";
 
 export default defineConfig({
+  base: "./",
   plugins: [react()],
   resolve: {
     alias: {
@@ -15,7 +16,7 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       input: {
-        popup: resolve(__dirname, "src/popup/index.html"),
+        popup: resolve(__dirname, "popup.html"),
         content: resolve(__dirname, "src/content/content.ts"),
         background: resolve(__dirname, "src/background/background.ts"),
       },

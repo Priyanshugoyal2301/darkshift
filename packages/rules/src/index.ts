@@ -363,4 +363,3 @@ export const getRuleById = (id: string): DarkPatternRule | undefined =>
 export const getRulesForPattern = (pattern: CCPAPattern): DarkPatternRule[] =>
   RULES_BY_PATTERN[pattern] ?? [];
 
-export type { DarkPatternRule, RuleSignal };
