@@ -1,11 +1,17 @@
 import os
 import json
-import google.generativeai as genai
 
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY", "dummy-key-for-mock"))
+try:
+    import google.generativeai as genai
+    HAS_GENAI = True
+    if os.environ.get("GEMINI_API_KEY"):
+        genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+except ImportError:
+    HAS_GENAI = False
+    genai = None
 
 def generate_audit_report(url: str, findings: list, total_pages: int, pages_analyzed: int) -> dict:
-    if os.environ.get("GEMINI_API_KEY") is None or os.environ.get("GEMINI_API_KEY") == "dummy-key-for-mock":
+    if not HAS_GENAI or os.environ.get("GEMINI_API_KEY") is None or os.environ.get("GEMINI_API_KEY") == "dummy-key-for-mock":
         # Return programmatic structured data
         return mock_generate(url, findings, total_pages, pages_analyzed)
 

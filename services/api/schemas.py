@@ -108,6 +108,7 @@ class ActionClassification(BaseModel):
 class AccessStatus(str, Enum):
     ACCESS_OK = "ACCESS_OK"
     ACCESS_REDIRECTED = "ACCESS_REDIRECTED"
+    PAGE_NOT_FOUND = "PAGE_NOT_FOUND"
     LOGIN_REQUIRED = "LOGIN_REQUIRED"
     RATE_LIMITED = "RATE_LIMITED"
     FORBIDDEN = "FORBIDDEN"
@@ -505,3 +506,255 @@ class ScanSummary(BaseModel):
     summary: str
     display_name: str
 
+
+# ─── VP2: Product Identity & Listing Graph ───────────────────────────────────
+
+class MatchConfidence(str, Enum):
+    MATCHED = "MATCHED"                    # SKU/MPN/GTIN confirmed match
+    PROBABLE_MATCH = "PROBABLE_MATCH"      # Brand + model + key attributes match
+    POSSIBLE_MATCH = "POSSIBLE_MATCH"      # Normalized title similarity >= 0.80
+    NOT_MATCHED = "NOT_MATCHED"            # Definitively different product
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"  # Too little data to decide
+
+
+class ProductFingerprint(BaseModel):
+    """Canonical product identity extracted from a listing."""
+    brand: Optional[str] = None
+    model: Optional[str] = None
+    normalized_title: str = ""
+    sku: Optional[str] = None
+    mpn: Optional[str] = None
+    gtin: Optional[str] = None
+    variant: Optional[str] = None
+    ram: Optional[str] = None
+    storage: Optional[str] = None
+    processor: Optional[str] = None
+    screen_size: Optional[str] = None
+    color: Optional[str] = None
+    condition: str = "new"             # new, refurbished, used
+    source_url: str = ""
+    extraction_confidence: float = 0.5
+
+
+class Seller(BaseModel):
+    """Seller identity on a marketplace listing."""
+    name: str
+    is_platform_direct: bool = False   # e.g. "Sold by Amazon" / "Croma" itself
+    seller_url: Optional[str] = None
+    rating: Optional[float] = None
+    rating_count: Optional[int] = None
+    fulfilled_by: Optional[str] = None  # e.g. "Fulfilled by Amazon"
+    source_marketplace: str = ""
+
+
+class Offer(BaseModel):
+    """A single offer/discount/coupon observed on a listing page."""
+    offer_id: str = Field(default_factory=lambda: f"of-{uuid.uuid4().hex[:8]}")
+    offer_type: str = "unknown"        # bank_offer, coupon, instant_discount, exchange, emi, membership
+    offer_title: str = ""
+    offer_text: str = ""
+    coupon_code: Optional[str] = None
+    discount_value: Optional[float] = None      # absolute rupee discount
+    discount_percentage: Optional[float] = None
+    minimum_purchase: Optional[float] = None
+    payment_method: Optional[str] = None        # e.g. "HDFC Credit Card"
+    bank: Optional[str] = None
+    membership_requirement: Optional[str] = None  # e.g. "Prime", "SuperCoin"
+    expiry_visible: Optional[str] = None
+    is_conditional: bool = True            # requires specific payment/membership
+    is_applicable: bool = False            # True only if condition clearly met
+    stage_first_observed: str = "product"
+    source_selector: Optional[str] = None
+    screenshot_reference: Optional[str] = None
+
+
+class EffectivePrice(BaseModel):
+    """Calculated effective payable price from observed price + offers + fees."""
+    listed_price: float
+    mandatory_fees: float = 0.0
+    applicable_coupons: float = 0.0         # Only definitively applicable discounts
+    conditional_savings: float = 0.0        # Savings that require bank/membership eligibility
+    conditional_savings_detail: list[str] = []   # Human-readable conditions
+    effective_payable: float                 # listed_price - applicable_coupons + mandatory_fees
+    currency: str = "INR"
+    calculation_note: str = ""
+
+
+class ListingStatus(str, Enum):
+    PRODUCT_CAPTURED = "PRODUCT_CAPTURED"
+    CAPTURED = "PRODUCT_CAPTURED"            # Alias for backwards compatibility
+    PAGE_NOT_FOUND = "PAGE_NOT_FOUND"
+    PRODUCT_NOT_FOUND = "PRODUCT_NOT_FOUND"
+    ACCESS_BLOCKED = "ACCESS_BLOCKED"
+    BOT_CHALLENGE = "BOT_CHALLENGE"
+    LOGIN_REQUIRED = "LOGIN_REQUIRED"
+    RENDER_FAILURE = "RENDER_FAILURE"
+    PRODUCT_PAGE = "PRODUCT_PAGE"
+    NOT_EVALUATED = "NOT_EVALUATED"
+
+
+class Listing(BaseModel):
+    """A single product listing on one marketplace."""
+    listing_id: str = Field(default_factory=lambda: f"ls-{uuid.uuid4().hex[:8]}")
+    marketplace: str                        # "amazon", "flipkart", "croma", etc.
+    marketplace_display: str = ""           # "Amazon.in", "Flipkart", etc.
+    url: str = ""
+    status: ListingStatus = ListingStatus.NOT_EVALUATED
+    provenance: str = "LIVE_CRAWL"          # "LIVE_CRAWL", "DEMO_FIXTURE", "ACCESS_BLOCKED", "PAGE_NOT_FOUND"
+    access_reason: Optional[str] = None
+    page_state: str = "NOT_EVALUATED"       # "PRODUCT_PAGE", "PAGE_NOT_FOUND", "LOGIN_REQUIRED", etc.
+
+    product_fingerprint: Optional[ProductFingerprint] = None
+    match_confidence: MatchConfidence = MatchConfidence.INSUFFICIENT_EVIDENCE
+    match_evidence: list[str] = []
+
+    seller: Optional[Seller] = None
+    listed_price: Optional[float] = None
+    mrp: Optional[float] = None
+    currency: str = "INR"
+    delivery_charge: Optional[float] = None
+    delivery_free: Optional[bool] = None
+    delivery_estimate: Optional[str] = None
+
+    offers: list[Offer] = []
+    effective_price: Optional[EffectivePrice] = None
+
+    # Dark pattern analysis for this listing
+    scan_id: Optional[str] = None          # References a full ScanResult if crawled
+    risk_level: str = "NOT_EVALUATED"
+    findings_count: int = 0
+    findings_summary: list[str] = []
+
+    # Transparency per dimension
+    price_transparency: str = "NOT_EVALUATED"     # CLEAR / SIGNAL / NOT_EVALUATED
+    fee_transparency: str = "NOT_EVALUATED"
+    offer_transparency: str = "NOT_EVALUATED"
+    seller_transparency: str = "NOT_EVALUATED"
+    urgency_signals: str = "NOT_EVALUATED"
+    choice_transparency: str = "NOT_EVALUATED"
+    wording_transparency: str = "NOT_EVALUATED"
+    journey_coverage: int = 0              # percent of purchase journey evaluated
+
+    screenshot_b64: Optional[str] = None
+    captured_at: float = Field(default_factory=time.time)
+
+
+class ReviewSignalType(str, Enum):
+    PRICE_MISMATCH = "PRICE_MISMATCH"
+    CHECKOUT_PRICE_DIFFERENCE = "CHECKOUT_PRICE_DIFFERENCE"
+    UNEXPECTED_FEE = "UNEXPECTED_FEE"
+    COUPON_NOT_APPLIED = "COUPON_NOT_APPLIED"
+    SELLER_MISMATCH = "SELLER_MISMATCH"
+    WRONG_PRODUCT = "WRONG_PRODUCT"
+    WRONG_VARIANT = "WRONG_VARIANT"
+    MISLEADING_DISCOUNT = "MISLEADING_DISCOUNT"
+
+
+class ReviewSignal(BaseModel):
+    review_text: str
+    signal_type: ReviewSignalType
+    listing_id: Optional[str] = None
+    marketplace: Optional[str] = None
+    source: str = "public_reviews"
+    timestamp: Optional[str] = None
+    rating: Optional[float] = None
+    confidence: float = 0.8
+
+
+class ReviewCluster(BaseModel):
+    """A cluster of public reviews mentioning a specific concern."""
+    concern: str                           # "PRICE_MISMATCH", "UNEXPECTED_FEE", etc.
+    signal_type: Optional[ReviewSignalType] = None
+    review_count: int
+    representative_snippet: str
+    confidence: float = 0.5
+    source_url: Optional[str] = None
+    signals: list[ReviewSignal] = []
+
+
+class ReviewEvidence(BaseModel):
+    """Public review evidence corroborating dark-pattern findings."""
+    total_reviews_analyzed: int = 0
+    clusters: list[ReviewCluster] = []
+    overall_corroboration: str = "INSUFFICIENT_DATA"  # CORROBORATED / WEAK_SIGNAL / CLEAN / INSUFFICIENT_DATA
+    disclaimer: str = (
+        "Review evidence is corroborating signal only. "
+        "Individual reviews are not verified. "
+        "DarkShield does not claim fraud based on review content alone."
+    )
+
+
+class PriceInconsistencyEvidence(BaseModel):
+    """Evidence record for same-product/different-price finding."""
+    product_match: MatchConfidence
+    seller_a_name: Optional[str] = None
+    seller_b_name: Optional[str] = None
+    price_a: float
+    price_b: float
+    price_delta: float
+    price_delta_pct: float
+    marketplace_a: str
+    marketplace_b: str
+    same_product: bool = True
+    same_seller: bool = True
+    same_variant: bool = True
+    same_condition: bool = True
+    material_difference: bool = True
+    offer_explanation_found: bool = False
+    offer_explanation: Optional[str] = None
+    fee_explanation_found: bool = False
+    variant_mismatch: bool = False
+    fulfillment_difference: bool = False
+    coverage_a: int = 0
+    coverage_b: int = 0
+    explanation: str = ""
+
+
+# ─── VP2: Comparison Result ───────────────────────────────────────────────────
+
+class CompareStatus(str, Enum):
+    RUNNING = "running"
+    DONE = "done"
+    ERROR = "error"
+    PARTIAL = "partial"   # some marketplaces blocked
+
+
+class CompareResult(BaseModel):
+    """Cross-marketplace product comparison result."""
+    compare_id: str = Field(default_factory=lambda: f"cmp-{uuid.uuid4().hex[:8]}")
+    query: str                             # Original search query or URL
+    query_type: str = "url"               # "query", "url", "multi_url"
+    status: CompareStatus = CompareStatus.RUNNING
+
+    canonical_product: Optional[ProductFingerprint] = None
+    listings: list[Listing] = []
+
+    # Price inconsistency findings
+    inconsistencies: list[PriceInconsistencyEvidence] = []
+    review_evidence: Optional[ReviewEvidence] = None
+
+    started_at: float = Field(default_factory=time.time)
+    completed_at: Optional[float] = None
+    audit_logs: list[AuditLogEntry] = []
+
+
+# ─── VP2: API Request Models ──────────────────────────────────────────────────
+
+class ProductSearchRequest(BaseModel):
+    """Search for a product across marketplaces by natural language query or URL."""
+    query: str                              # Natural language query OR product URL
+    marketplaces: list[str] = []            # Empty = use default set
+    max_listings_per_marketplace: int = Field(default=1, ge=1, le=3)
+
+
+class CompareRequest(BaseModel):
+    """Compare specific product URLs or a product query across marketplaces."""
+    urls: list[str] = []                    # Product URLs to compare (can be empty if query provided)
+    query: Optional[str] = None             # Product search intent (e.g. "MacBook Air M2")
+    reference_url: Optional[str] = None    # Which URL is the reference listing
+
+
+class CompareResponse(BaseModel):
+    compare_id: str
+    status: CompareStatus
+    estimated_seconds: Optional[int] = None

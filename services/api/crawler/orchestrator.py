@@ -553,17 +553,33 @@ class AcquisitionOrchestrator:
             failure_reason=failure_reason
         )
 
-        if access_status != AccessStatus.ACCESS_OK and not state_machine.product_reached:
-            from schemas import RiskAssessment, DarkPatternAssessmentStatus
+        if access_status != AccessStatus.ACCESS_OK or not state_machine.product_reached:
+            from schemas import RiskAssessment, DarkPatternAssessmentStatus, TransparencyScore, TransparencyDimensions
+            deduped = []
+            findings_by_pattern = {}
             risk_assessment = RiskAssessment(
                 risk_level="UNDETERMINED",
                 risk_score=0,
                 checks_performed=14,
                 signals_found=0,
                 coverage_sufficient=False,
-                summary=f"Website access restricted: {access_status.value}. {access_reason or 'Challenge prevented inspection.'} Price analysis: Not evaluated."
+                summary=f"Website state: {access_status.value}. {access_reason or 'No valid product verified.'} Price analysis: Not evaluated."
             )
             price_journey.dark_pattern_assessment = DarkPatternAssessmentStatus.INCONCLUSIVE
+            transparency_score = TransparencyScore(
+                total=0,
+                dimensions=TransparencyDimensions(
+                    price_transparency=0,
+                    choice_neutrality=0,
+                    consent_clarity=0,
+                    urgency_signals=0,
+                    flow_transparency=0
+                ),
+                deductions=[],
+                disclaimer="Page could not be evaluated: product was not captured."
+            )
+            if not state_machine.product_reached:
+                scan_coverage.coverage_score = 0
 
         logs.append(AuditLogEntry(
             timestamp=format_ts(),

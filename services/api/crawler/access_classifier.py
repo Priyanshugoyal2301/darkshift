@@ -54,6 +54,14 @@ class AccessClassifier:
 
         lower_text = (visible_text + " " + html[:3000]).lower()
 
+        if http_status == 404 or any(nf in lower_text for nf in [
+            "page not found", "404 not found", "404 error",
+            "looking for something? we're sorry",
+            "we couldn't find that page", "product not found",
+            "item unavailable", "page doesn't exist"
+        ]):
+            return AccessStatus.PAGE_NOT_FOUND, "HTTP 404 or Page Not Found — the requested resource does not exist."
+
         if http_status == 401:
             return AccessStatus.LOGIN_REQUIRED, "HTTP 401 Unauthorized — Authentication required to access product."
         if http_status == 429:
