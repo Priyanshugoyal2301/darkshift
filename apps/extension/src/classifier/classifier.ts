@@ -14,6 +14,7 @@ import type {
   ScoreDeduction,
   CCPAPattern,
   RiskAssessment,
+  RiskLevel,
   ScanCoverage,
   ConfidenceTier,
 } from "@darkshield/schemas";
@@ -201,14 +202,14 @@ export function computeCalibratedRiskAssessment(findings: Finding[]): RiskAssess
   // Weighted risk score (0 to 100)
   const risk_score = Math.min(100, highCount * 30 + medCount * 15 + lowCount * 5);
 
-  let risk_level = "LOW";
+  let risk_level: RiskLevel = "LOW";
   let summary = "No critical dark pattern indicators observed on evaluated page.";
 
   if (highCount >= 1 || risk_score >= 60) {
     risk_level = "HIGH";
     summary = `${findings.length} potential dark pattern(s) detected with ${highCount} high-confidence violation(s).`;
   } else if (medCount >= 1 || risk_score >= 25) {
-    risk_level = "MODERATE";
+    risk_level = "ELEVATED";
     summary = `${findings.length} potential dark pattern signal(s) identified. Verification advised.`;
   } else if (findings.length > 0) {
     risk_level = "LOW";

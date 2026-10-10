@@ -15,7 +15,6 @@ import type {
   PricePoint,
   DOMEvidence,
   BoundingBox,
-  PageStateSnapshot,
   VisualProminenceScore,
 } from "@darkshield/schemas";
 

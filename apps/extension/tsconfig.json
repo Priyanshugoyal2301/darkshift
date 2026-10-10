@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "types": ["chrome", "vite/client"],
+    "paths": {
+      "@darkshield/schemas": ["../../packages/schemas/src/index.ts"],
+      "@darkshield/rules": ["../../packages/rules/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*", "vite.config.ts"]
+}
